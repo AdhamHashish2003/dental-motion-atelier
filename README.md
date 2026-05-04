@@ -19,3 +19,37 @@ With the server running, run:
 ```bash
 npm test
 ```
+
+## Contact Form Email
+
+Form submissions post to `/api/contact` and are sent to
+`team@dentalmotiongraphic.com`. Each submission is also saved in a Postgres
+table named `contact_submissions`.
+
+Set these environment variables in Railway before relying on live email:
+
+```bash
+DATABASE_URL=<Railway Postgres connection string>
+CONTACT_TO_EMAIL=team@dentalmotiongraphic.com
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=team@dentalmotiongraphic.com
+SMTP_PASS=<Google app password>
+SMTP_FROM_EMAIL=team@dentalmotiongraphic.com
+```
+
+The app creates this table automatically on the first valid form submission:
+
+```sql
+SELECT created_at, name, email, offer, email_sent, email_error
+FROM contact_submissions
+ORDER BY created_at DESC;
+```
+
+You can access saved leads from the Railway Postgres service Data/Query tab, or
+from a terminal with:
+
+```bash
+railway connect Postgres
+```

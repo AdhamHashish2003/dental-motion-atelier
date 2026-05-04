@@ -4,6 +4,7 @@ const test = require("node:test");
 
 const html = readFileSync("index.html", "utf8");
 const script = readFileSync("script.js", "utf8");
+const server = readFileSync("server.js", "utf8");
 
 const expectedTargets = ["top", "services", "work", "process", "packages", "contact"];
 const expectedButtons = [
@@ -37,7 +38,12 @@ test("all visible button labels are present", () => {
 
 test("form and play interactions are wired", () => {
   assert.ok(html.includes('class="form-status"'));
+  assert.ok(html.includes('name="name"'));
+  assert.ok(html.includes('name="email"'));
+  assert.ok(html.includes('name="offer"'));
   assert.ok(script.includes('querySelector(".play-ring")'));
+  assert.ok(script.includes('fetch("/api/contact"'));
   assert.ok(script.includes('scrollIntoView({ behavior: "smooth" })'));
-  assert.ok(script.includes("Request received"));
+  assert.ok(script.includes("Request sent"));
+  assert.ok(server.includes("team@dentalmotiongraphic.com"));
 });
