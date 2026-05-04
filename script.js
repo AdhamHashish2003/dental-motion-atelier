@@ -29,7 +29,7 @@ document.querySelector(".contact-form")?.addEventListener("submit", (event) => {
   button.textContent = "Request received";
   button.disabled = true;
   if (status) {
-    status.textContent = "Thanks. Your luxury concept request is ready for follow-up.";
+    status.textContent = "Thanks. Your concept request is ready for follow-up.";
   }
 
   window.setTimeout(() => {

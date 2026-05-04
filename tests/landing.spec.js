@@ -7,13 +7,13 @@ const script = readFileSync("script.js", "utf8");
 
 const expectedTargets = ["top", "services", "work", "process", "packages", "contact"];
 const expectedButtons = [
-  "Book a Private Call",
+  "Book a Call",
   "Request a custom concept",
-  "See the luxury direction",
+  "Watch the style",
   "Ask for pricing",
-  "Build my luxury package",
+  "Build my package",
   "Book a strategy call",
-  "Request my luxury concept",
+  "Request my concept",
 ];
 
 test("all in-page link targets exist", () => {
@@ -32,7 +32,7 @@ test("all visible button labels are present", () => {
     assert.ok(html.includes(label), `Missing button label: ${label}`);
   }
 
-  assert.ok(html.includes('aria-label="Preview the luxury motion direction"'));
+  assert.ok(html.includes('aria-label="Preview the colorful motion direction"'));
 });
 
 test("form and play interactions are wired", () => {
