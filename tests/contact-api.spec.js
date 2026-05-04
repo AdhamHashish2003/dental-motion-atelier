@@ -1,7 +1,13 @@
 const assert = require("node:assert/strict");
 const { createServer } = require("node:http");
 const test = require("node:test");
-const { handleRequest, saveContactSubmission, updateContactEmailStatus } = require("../server");
+const {
+  contactEmailContent,
+  handleRequest,
+  resendConfig,
+  saveContactSubmission,
+  updateContactEmailStatus,
+} = require("../server");
 
 function startTestServer() {
   return new Promise((resolve) => {
@@ -106,4 +112,30 @@ test("contact submissions are written with email status updates", async () => {
     "hello@example.com",
     "Premium veneer launch campaign",
   ]);
+});
+
+test("resend configuration is selected when an API key is present", () => {
+  process.env.RESEND_KEY = "re_test_key";
+  process.env.RESEND_FROM_EMAIL = "Dental Motion <hello@dentalmotiongraphic.com>";
+
+  assert.deepEqual(resendConfig(), {
+    apiKey: "re_test_key",
+    fromEmail: "Dental Motion <hello@dentalmotiongraphic.com>",
+  });
+
+  delete process.env.RESEND_KEY;
+  delete process.env.RESEND_FROM_EMAIL;
+});
+
+test("contact email content escapes user text", () => {
+  const content = contactEmailContent({
+    name: "<Clinic>",
+    email: "hello@example.com",
+    offer: "Veneers & implants",
+  });
+
+  assert.match(content.subject, /<Clinic>/);
+  assert.match(content.text, /Veneers & implants/);
+  assert.match(content.html, /&lt;Clinic&gt;/);
+  assert.match(content.html, /Veneers &amp; implants/);
 });

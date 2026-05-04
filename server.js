@@ -116,6 +116,55 @@ function smtpConfig() {
   };
 }
 
+function resendConfig() {
+  const apiKey = process.env.RESEND_API_KEY || process.env.RESEND_KEY;
+
+  if (!apiKey) {
+    return null;
+  }
+
+  return {
+    apiKey,
+    fromEmail:
+      process.env.RESEND_FROM_EMAIL ||
+      process.env.SMTP_FROM_EMAIL ||
+      "Dental Motion Website <onboarding@resend.dev>",
+  };
+}
+
+function contactEmailContent(contact) {
+  const lines = [
+    "New lead from dentalmotiongraphic.com",
+    "",
+    `Clinic or brand: ${contact.name}`,
+    `Email: ${contact.email}`,
+    "",
+    "Offer:",
+    contact.offer,
+  ];
+
+  return {
+    subject: `New dental motion video lead from ${contact.name}`,
+    text: lines.join("\n"),
+    html: `
+      <h2>New dental motion video lead</h2>
+      <p><strong>Clinic or brand:</strong> ${escapeHtml(contact.name)}</p>
+      <p><strong>Email:</strong> ${escapeHtml(contact.email)}</p>
+      <p><strong>Offer:</strong></p>
+      <p>${escapeHtml(contact.offer).replaceAll("\n", "<br>")}</p>
+    `,
+  };
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
 function databaseConfig() {
   if (!process.env.DATABASE_URL) {
     return null;
@@ -212,6 +261,36 @@ async function sendContactEmail(contact, transportFactory = nodemailer.createTra
     return { dryRun: true };
   }
 
+  const resend = resendConfig();
+  const content = contactEmailContent(contact);
+
+  if (resend) {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${resend.apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        from: resend.fromEmail,
+        to: [contactRecipient],
+        reply_to: contact.email,
+        subject: content.subject,
+        html: content.html,
+        text: content.text,
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      const error = new Error(`Resend email failed with ${response.status}: ${detail}`);
+      error.code = "EMAIL_SEND_FAILED";
+      throw error;
+    }
+
+    return { dryRun: false, provider: "resend" };
+  }
+
   const config = smtpConfig();
 
   if (!config) {
@@ -227,19 +306,12 @@ async function sendContactEmail(contact, transportFactory = nodemailer.createTra
     from: `"Dental Motion Website" <${fromEmail}>`,
     to: contactRecipient,
     replyTo: contact.email,
-    subject: `New dental motion video lead from ${contact.name}`,
-    text: [
-      "New lead from dentalmotiongraphic.com",
-      "",
-      `Clinic or brand: ${contact.name}`,
-      `Email: ${contact.email}`,
-      "",
-      "Offer:",
-      contact.offer,
-    ].join("\n"),
+    subject: content.subject,
+    text: content.text,
+    html: content.html,
   });
 
-  return { dryRun: false };
+  return { dryRun: false, provider: "smtp" };
 }
 
 async function handleContact(request, response) {
@@ -342,8 +414,10 @@ if (require.main === module) {
 }
 
 module.exports = {
+  contactEmailContent,
   databaseConfig,
   handleRequest,
+  resendConfig,
   sendContactEmail,
   saveContactSubmission,
   smtpConfig,

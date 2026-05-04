@@ -26,11 +26,20 @@ Form submissions post to `/api/contact` and are sent to
 `team@dentalmotiongraphic.com`. Each submission is also saved in a Postgres
 table named `contact_submissions`.
 
-Set these environment variables in Railway before relying on live email:
+Recommended email setup is Resend because Google App Passwords may be
+unavailable for some Workspace accounts.
 
 ```bash
 DATABASE_URL=<Railway Postgres connection string>
 CONTACT_TO_EMAIL=team@dentalmotiongraphic.com
+RESEND_API_KEY=<Resend API key>
+# RESEND_KEY is also supported if that is the variable name used in Railway.
+RESEND_FROM_EMAIL=Dental Motion <hello@dentalmotiongraphic.com>
+```
+
+SMTP is also supported as a fallback:
+
+```bash
 SMTP_HOST=smtp.gmail.com
 SMTP_PORT=465
 SMTP_SECURE=true
