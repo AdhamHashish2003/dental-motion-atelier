@@ -114,11 +114,11 @@
                   <strong>Veneer Transformation</strong>
                 </div>
 
-                <div class="play-ring">
+                <button class="play-ring" type="button" aria-label="Preview the luxury motion direction">
                   <div class="play-core">
                     <div class="play-icon"></div>
                   </div>
-                </div>
+                </button>
 
                 <div class="floating-card floating-card-right">
                   <span class="card-label">Premium Story</span>
@@ -406,12 +406,12 @@
             <form class="contact-form">
               <label>
                 <span>Clinic or brand name</span>
-                <input type="text" placeholder="Your clinic name" />
+                <input type="text" placeholder="Your clinic name" required />
               </label>
 
               <label>
                 <span>Email address</span>
-                <input type="email" placeholder="name@example.com" />
+                <input type="email" placeholder="name@example.com" required />
               </label>
 
               <label>
@@ -419,12 +419,14 @@
                 <textarea
                   rows="4"
                   placeholder="Veneers, implants, whitening, aligners, smile makeovers, or a full campaign..."
+                  required
                 ></textarea>
               </label>
 
               <button class="button button-primary" type="submit">
                 Request my luxury concept
               </button>
+              <p class="form-status" role="status" aria-live="polite"></p>
             </form>
           </div>
         </section>

@@ -17,15 +17,26 @@ const revealObserver = new IntersectionObserver(
 
 revealItems.forEach((item) => revealObserver.observe(item));
 
+document.querySelector(".play-ring")?.addEventListener("click", () => {
+  document.querySelector("#work")?.scrollIntoView({ behavior: "smooth" });
+});
+
 document.querySelector(".contact-form")?.addEventListener("submit", (event) => {
   event.preventDefault();
   const button = event.currentTarget.querySelector("button");
+  const status = event.currentTarget.querySelector(".form-status");
   const originalText = button.textContent;
-  button.textContent = "Thanks - we will be in touch";
+  button.textContent = "Request received";
   button.disabled = true;
+  if (status) {
+    status.textContent = "Thanks. Your luxury concept request is ready for follow-up.";
+  }
 
   window.setTimeout(() => {
     button.textContent = originalText;
     button.disabled = false;
+    if (status) {
+      status.textContent = "";
+    }
   }, 2200);
 });

@@ -1,0 +1,13 @@
+{
+  "name": "dental-motion-atelier",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Luxury landing page for dental motion graphic video services.",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test tests/landing.spec.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

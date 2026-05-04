@@ -1,3 +1,6 @@
 preview.png
 luxury-preview.png
+verified-*.png
+test-results/
+playwright-report/
 .DS_Store

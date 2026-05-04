@@ -7,7 +7,15 @@ Luxury landing page for selling dental motion graphic videos.
 Open `index.html` directly, or run:
 
 ```bash
-python3 -m http.server 4173
+npm start
 ```
 
 Then visit `http://127.0.0.1:4173`.
+
+## Interaction checks
+
+With the server running, run:
+
+```bash
+npm test
+```
