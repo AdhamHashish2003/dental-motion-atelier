@@ -1,6 +1,6 @@
-# Dental Motion Atelier
+# Dental Motion
 
-Luxury landing page for selling dental motion graphic videos.
+Landing page for selling dental motion graphic videos.
 
 ## Local preview
 

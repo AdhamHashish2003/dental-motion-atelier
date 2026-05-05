@@ -9,12 +9,12 @@ const server = readFileSync("server.js", "utf8");
 const expectedTargets = ["top", "services", "work", "process", "packages", "contact"];
 const expectedButtons = [
   "Book a Call",
-  "Request a custom concept",
-  "Watch the style",
+  "Get a video quote",
+  "See the video style",
   "Ask for pricing",
-  "Build my package",
-  "Book a strategy call",
-  "Request my concept",
+  "Start my video",
+  "Book a video call",
+  "Request my video",
 ];
 
 test("all in-page link targets exist", () => {
