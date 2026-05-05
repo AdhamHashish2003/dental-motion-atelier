@@ -70,6 +70,26 @@ permission-based email lists. It uses Resend with
 `team@dentalmotiongraphic.com`, saves subscribers and campaign history in
 Postgres, and adds unsubscribe links to every campaign email.
 
+The private browser dashboard is available at:
+
+```text
+https://dentalmotiongraphic.com/admin
+```
+
+Paste `EMAIL_ADMIN_TOKEN` from Railway into the dashboard once. From there you
+can run:
+
+```text
+fetch sf dental clinics
+send 15
+stats
+```
+
+`fetch sf dental clinics` uses OpenStreetMap public business data and clinic
+websites to find public email addresses. `send 15` sends the ready Dental Motion
+outreach template to the next 15 unsent leads, then marks those leads as sent so
+they disappear from the pending queue.
+
 Required Railway variables:
 
 ```bash

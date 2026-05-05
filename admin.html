@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dental Motion Admin</title>
+    <link rel="stylesheet" href="admin.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">Private Railway command center</p>
+        <h1>Dental Motion outreach</h1>
+        <p>
+          Fetch dental clinic leads, prepare the ready email template, and send
+          only the next 15 unsent emails.
+        </p>
+      </section>
+
+      <section class="card auth-card" id="authCard">
+        <label>
+          <span>Admin token</span>
+          <input id="tokenInput" type="password" placeholder="Paste EMAIL_ADMIN_TOKEN from Railway" />
+        </label>
+        <button id="saveTokenButton" type="button">Save token</button>
+        <p class="hint">
+          The token stays in this browser only. The public site cannot send emails without it.
+        </p>
+      </section>
+
+      <section class="card command-card">
+        <label>
+          <span>Command</span>
+          <input id="commandInput" type="text" value="fetch sf dental clinics" />
+        </label>
+        <div class="actions">
+          <button id="runCommandButton" type="button">Run command</button>
+          <button id="fetchButton" type="button">Fetch SF clinics</button>
+          <button id="sendButton" type="button">Send 15</button>
+          <button id="statsButton" type="button">Refresh stats</button>
+        </div>
+        <p class="hint">
+          Try: <code>fetch sf dental clinics</code>, <code>send 15</code>, or <code>stats</code>.
+        </p>
+      </section>
+
+      <section class="grid">
+        <article class="metric">
+          <span>Total leads</span>
+          <strong id="totalMetric">-</strong>
+        </article>
+        <article class="metric">
+          <span>Ready to send</span>
+          <strong id="pendingMetric">-</strong>
+        </article>
+        <article class="metric">
+          <span>Already sent</span>
+          <strong id="sentMetric">-</strong>
+        </article>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Activity</p>
+            <h2>Latest result</h2>
+          </div>
+          <button id="clearTokenButton" class="ghost" type="button">Clear token</button>
+        </div>
+        <pre id="output">Ready.</pre>
+      </section>
+
+      <section class="card">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Queue</p>
+            <h2>Recent leads</h2>
+          </div>
+        </div>
+        <div id="leadList" class="lead-list"></div>
+      </section>
+    </main>
+
+    <script src="admin.js"></script>
+  </body>
+</html>

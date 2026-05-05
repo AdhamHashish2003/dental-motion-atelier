@@ -3,6 +3,8 @@ const { readFileSync } = require("node:fs");
 const test = require("node:test");
 
 const html = readFileSync("index.html", "utf8");
+const adminHtml = readFileSync("admin.html", "utf8");
+const adminScript = readFileSync("admin.js", "utf8");
 const script = readFileSync("script.js", "utf8");
 const server = readFileSync("server.js", "utf8");
 
@@ -46,4 +48,14 @@ test("form and play interactions are wired", () => {
   assert.ok(script.includes('scrollIntoView({ behavior: "smooth" })'));
   assert.ok(script.includes("Request sent"));
   assert.ok(server.includes("team@dentalmotiongraphic.com"));
+});
+
+test("admin dashboard is wired to protected lead commands", () => {
+  assert.ok(adminHtml.includes("Dental Motion outreach"));
+  assert.ok(adminHtml.includes("fetch sf dental clinics"));
+  assert.ok(adminScript.includes("/api/admin/command"));
+  assert.ok(adminScript.includes("/api/admin/leads/fetch"));
+  assert.ok(adminScript.includes("/api/admin/leads/send-15"));
+  assert.ok(adminScript.includes("dentalMotionAdminToken"));
+  assert.ok(server.includes('decodedPath === "/admin"'));
 });

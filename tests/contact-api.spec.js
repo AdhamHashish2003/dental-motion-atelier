@@ -5,9 +5,12 @@ const {
   campaignEmailContent,
   contactEmailContent,
   dailyCampaignConfig,
+  defaultDentalOutreachCampaign,
   handleRequest,
+  leadLocationFromCommand,
   localDateTimeParts,
   parseDailyTime,
+  personalizeTemplate,
   resendConfig,
   requireMarketingAdmin,
   sendMarketingEmail,
@@ -210,6 +213,9 @@ test("marketing subscribers must include consent evidence", () => {
     email: "owner@example.com",
     name: "Clinic Owner",
     clinic: "Example Dental",
+    website: null,
+    phone: null,
+    address: null,
     source: "manual import",
     consentNote: "They opted in through the clinic owner list.",
   });
@@ -294,6 +300,26 @@ test("marketing email sends through Resend with domain sender and list unsubscri
   delete process.env.RESEND_KEY;
   delete process.env.EMAIL_CAMPAIGN_FROM_EMAIL;
   delete process.env.PUBLIC_SITE_URL;
+});
+
+test("lead commands understand SF and outreach template personalizes clinic names", () => {
+  assert.deepEqual(leadLocationFromCommand("fetch sf dental clinics"), {
+    bbox: [37.70, -122.52, 37.83, -122.35],
+    label: "San Francisco, CA",
+  });
+  assert.equal(leadLocationFromCommand("fetch paris dental clinics"), null);
+
+  const campaign = defaultDentalOutreachCampaign(15);
+  assert.equal(campaign.only_unsent, true);
+  assert.equal(campaign.limit, 15);
+  assert.match(campaign.subject, /{{clinic}}/);
+  assert.match(
+    personalizeTemplate(campaign.subject, {
+      clinic: "Marina Dental",
+      email: "hello@example.com",
+    }),
+    /Marina Dental/
+  );
 });
 
 test("daily campaign config is explicit and limited", () => {
