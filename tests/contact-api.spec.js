@@ -2,11 +2,16 @@ const assert = require("node:assert/strict");
 const { createServer } = require("node:http");
 const test = require("node:test");
 const {
+  campaignEmailContent,
   contactEmailContent,
   handleRequest,
   resendConfig,
+  requireMarketingAdmin,
+  sendMarketingEmail,
   saveContactSubmission,
   updateContactEmailStatus,
+  validateCampaignPayload,
+  validateMarketingSubscriber,
 } = require("../server");
 
 function startTestServer() {
@@ -35,6 +40,19 @@ async function postContact(baseUrl, body) {
   return {
     body: await response.json(),
     status: response.status,
+  };
+}
+
+function fakeJsonResponse() {
+  return {
+    body: null,
+    status: null,
+    writeHead(status) {
+      this.status = status;
+    },
+    end(body) {
+      this.body = JSON.parse(body);
+    },
   };
 }
 
@@ -138,4 +156,139 @@ test("contact email content escapes user text", () => {
   assert.match(content.text, /Veneers & implants/);
   assert.match(content.html, /&lt;Clinic&gt;/);
   assert.match(content.html, /Veneers &amp; implants/);
+});
+
+test("marketing admin routes require a configured bearer token", () => {
+  delete process.env.EMAIL_ADMIN_TOKEN;
+  const missingConfigResponse = fakeJsonResponse();
+
+  assert.equal(requireMarketingAdmin({ headers: {} }, missingConfigResponse), false);
+  assert.equal(missingConfigResponse.status, 503);
+  assert.match(missingConfigResponse.body.message, /EMAIL_ADMIN_TOKEN/);
+
+  process.env.EMAIL_ADMIN_TOKEN = "secret-token";
+  const missingTokenResponse = fakeJsonResponse();
+
+  assert.equal(requireMarketingAdmin({ headers: {} }, missingTokenResponse), false);
+  assert.equal(missingTokenResponse.status, 401);
+
+  const validResponse = fakeJsonResponse();
+  assert.equal(
+    requireMarketingAdmin(
+      {
+        headers: {
+          authorization: "Bearer secret-token",
+        },
+      },
+      validResponse
+    ),
+    true
+  );
+
+  delete process.env.EMAIL_ADMIN_TOKEN;
+});
+
+test("marketing subscribers must include consent evidence", () => {
+  const missingConsent = validateMarketingSubscriber({
+    email: "owner@example.com",
+    name: "Clinic Owner",
+  });
+
+  assert.match(missingConsent.error, /consent_note/);
+
+  const valid = validateMarketingSubscriber({
+    email: "OWNER@EXAMPLE.COM",
+    name: "Clinic Owner",
+    clinic: "Example Dental",
+    consent_note: "They opted in through the clinic owner list.",
+  });
+
+  assert.deepEqual(valid.data, {
+    email: "owner@example.com",
+    name: "Clinic Owner",
+    clinic: "Example Dental",
+    source: "manual import",
+    consentNote: "They opted in through the clinic owner list.",
+  });
+});
+
+test("campaign payload creates text fallback and caps recipient limit", () => {
+  process.env.EMAIL_CAMPAIGN_MAX_RECIPIENTS = "25";
+
+  const valid = validateCampaignPayload({
+    subject: "Dental video offer",
+    html: "<h1>Dental videos</h1><p>Show implant treatment steps clearly.</p>",
+    limit: 999,
+  });
+
+  assert.equal(valid.data.limit, 25);
+  assert.match(valid.data.text, /Dental videos/);
+  assert.match(valid.data.text, /implant treatment/);
+
+  delete process.env.EMAIL_CAMPAIGN_MAX_RECIPIENTS;
+});
+
+test("campaign email content includes unsubscribe compliance footer", () => {
+  process.env.PUBLIC_SITE_URL = "https://dentalmotiongraphic.com/";
+  process.env.EMAIL_FOOTER_ADDRESS = "Dental Motion, 123 Clinic Street";
+
+  const content = campaignEmailContent(
+    {
+      html: "<p>Hello doctor.</p>",
+      text: "Hello doctor.",
+    },
+    {
+      email: "owner@example.com",
+      unsubscribe_token: "abc123",
+    }
+  );
+
+  assert.match(content.html, /Unsubscribe/);
+  assert.match(content.html, /Dental Motion, 123 Clinic Street/);
+  assert.match(content.text, /https:\/\/dentalmotiongraphic\.com\/unsubscribe\?token=abc123/);
+
+  delete process.env.PUBLIC_SITE_URL;
+  delete process.env.EMAIL_FOOTER_ADDRESS;
+});
+
+test("marketing email sends through Resend with domain sender and list unsubscribe", async () => {
+  process.env.RESEND_KEY = "re_test_key";
+  process.env.EMAIL_CAMPAIGN_FROM_EMAIL = "Dental Motion <team@dentalmotiongraphic.com>";
+  process.env.PUBLIC_SITE_URL = "https://dentalmotiongraphic.com";
+
+  let capturedRequest;
+  const result = await sendMarketingEmail(
+    {
+      subject: "Dental video offer",
+      html: "<p>Hello doctor.</p>",
+      text: "Hello doctor.",
+    },
+    {
+      email: "owner@example.com",
+      unsubscribe_token: "abc123",
+    },
+    async (url, request) => {
+      capturedRequest = { url, request };
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ id: "email_123" });
+        },
+      };
+    }
+  );
+
+  const body = JSON.parse(capturedRequest.request.body);
+
+  assert.deepEqual(result, { id: "email_123", provider: "resend", dryRun: false });
+  assert.equal(capturedRequest.url, "https://api.resend.com/emails");
+  assert.equal(capturedRequest.request.headers.Authorization, "Bearer re_test_key");
+  assert.equal(body.from, "Dental Motion <team@dentalmotiongraphic.com>");
+  assert.deepEqual(body.to, ["owner@example.com"]);
+  assert.match(body.headers["List-Unsubscribe"], /\/unsubscribe\?token=abc123/);
+
+  delete process.env.RESEND_KEY;
+  delete process.env.EMAIL_CAMPAIGN_FROM_EMAIL;
+  delete process.env.PUBLIC_SITE_URL;
 });

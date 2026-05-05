@@ -1,0 +1,11 @@
+{
+  "consent_note": "These clinics asked to receive Dental Motion email updates.",
+  "subscribers": [
+    {
+      "email": "owner@example.com",
+      "name": "Clinic Owner",
+      "clinic": "Example Dental",
+      "source": "manual list"
+    }
+  ]
+}

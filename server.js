@@ -1,15 +1,18 @@
 const { createReadStream, existsSync, statSync } = require("node:fs");
 const { createServer } = require("node:http");
+const { randomBytes, timingSafeEqual } = require("node:crypto");
 const { extname, join, normalize, relative, resolve } = require("node:path");
+const { setTimeout: delay } = require("node:timers/promises");
 const nodemailer = require("nodemailer");
 const { Pool } = require("pg");
 
 const root = resolve(__dirname);
 const port = Number(process.env.PORT || 4173);
 const contactRecipient = process.env.CONTACT_TO_EMAIL || "team@dentalmotiongraphic.com";
-const maxBodyBytes = 20 * 1024;
+const maxBodyBytes = 1024 * 1024;
 let databasePool;
 let contactTableReady = false;
+let marketingTablesReady = false;
 
 const types = {
   ".css": "text/css; charset=utf-8",
@@ -46,6 +49,14 @@ function sendJson(response, statusCode, payload) {
     "Content-Type": "application/json; charset=utf-8",
   });
   response.end(JSON.stringify(payload));
+}
+
+function sendHtml(response, statusCode, html) {
+  response.writeHead(statusCode, {
+    "Cache-Control": "no-store",
+    "Content-Type": "text/html; charset=utf-8",
+  });
+  response.end(html);
 }
 
 function readJsonBody(request) {
@@ -256,6 +267,619 @@ function isDatabaseRequired() {
   return process.env.CONTACT_DRY_RUN !== "true" && process.env.CONTACT_DATABASE_REQUIRED !== "false";
 }
 
+function publicSiteUrl() {
+  return (process.env.PUBLIC_SITE_URL || process.env.SITE_URL || "https://dentalmotiongraphic.com").replace(/\/+$/, "");
+}
+
+function marketingAdminToken() {
+  return process.env.EMAIL_ADMIN_TOKEN || "";
+}
+
+function bearerToken(request) {
+  const header = request.headers.authorization || "";
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1].trim() : "";
+}
+
+function safeEqualString(actual, expected) {
+  if (!actual || !expected) {
+    return false;
+  }
+
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+
+  if (actualBuffer.length !== expectedBuffer.length) {
+    return false;
+  }
+
+  return timingSafeEqual(actualBuffer, expectedBuffer);
+}
+
+function requireMarketingAdmin(request, response) {
+  const expected = marketingAdminToken();
+
+  if (!expected) {
+    sendJson(response, 503, {
+      ok: false,
+      message: "Email admin is not configured yet. Set EMAIL_ADMIN_TOKEN in Railway first.",
+    });
+    return false;
+  }
+
+  if (!bearerToken(request)) {
+    sendJson(response, 401, {
+      ok: false,
+      message: "Missing admin token.",
+    });
+    return false;
+  }
+
+  if (!safeEqualString(bearerToken(request), expected)) {
+    sendJson(response, 403, {
+      ok: false,
+      message: "Invalid admin token.",
+    });
+    return false;
+  }
+
+  return true;
+}
+
+function campaignFromEmail() {
+  const configured =
+    process.env.EMAIL_CAMPAIGN_FROM_EMAIL ||
+    process.env.RESEND_FROM_EMAIL ||
+    process.env.SMTP_FROM_EMAIL ||
+    "team@dentalmotiongraphic.com";
+
+  return configured.includes("<") ? configured : `Dental Motion <${configured}>`;
+}
+
+function campaignConfig() {
+  const resend = resendConfig();
+
+  if (!resend) {
+    return null;
+  }
+
+  return {
+    apiKey: resend.apiKey,
+    fromEmail: campaignFromEmail(),
+  };
+}
+
+function campaignFooterAddress() {
+  return process.env.EMAIL_FOOTER_ADDRESS || "Dental Motion, dentalmotiongraphic.com";
+}
+
+function stripHtml(html) {
+  return String(html || "")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|h[1-6]|li)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]{2,}/g, " ")
+    .trim();
+}
+
+function boundedPositiveInteger(value, fallback, max) {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed) || parsed < 1) {
+    return fallback;
+  }
+
+  return Math.min(Math.floor(parsed), max);
+}
+
+function validateMarketingSubscriber(raw, fallbackConsentNote = "") {
+  const email = clean(raw.email).toLowerCase();
+  const name = clean(raw.name);
+  const clinic = clean(raw.clinic);
+  const source = clean(raw.source || "manual import");
+  const consentNote = String(raw.consent_note || fallbackConsentNote || "").trim();
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 160) {
+    return { error: "Each subscriber needs a valid email address." };
+  }
+
+  if (name.length > 120 || clinic.length > 160 || source.length > 160) {
+    return { error: `Subscriber metadata is too long for ${email}.` };
+  }
+
+  if (consentNote.length < 8 || consentNote.length > 500) {
+    return {
+      error:
+        "Each subscriber import needs a consent_note explaining why these people agreed to receive email.",
+    };
+  }
+
+  return {
+    data: {
+      email,
+      name: name || null,
+      clinic: clinic || null,
+      source: source || "manual import",
+      consentNote,
+    },
+  };
+}
+
+function validateCampaignPayload(payload) {
+  const subject = clean(payload.subject);
+  const previewText = clean(payload.preview_text || payload.previewText || "");
+  const html = String(payload.html || "").trim();
+  const text = String(payload.text || stripHtml(html)).trim();
+  const maxRecipients = Math.max(1, Number(process.env.EMAIL_CAMPAIGN_MAX_RECIPIENTS || 500));
+  const limit = boundedPositiveInteger(payload.limit, maxRecipients, maxRecipients);
+
+  if (subject.length < 4 || subject.length > 180) {
+    return { error: "Campaign subject must be between 4 and 180 characters." };
+  }
+
+  if (previewText.length > 180) {
+    return { error: "Preview text must be 180 characters or less." };
+  }
+
+  if (html.length < 20 || html.length > 60000) {
+    return { error: "Campaign html must be between 20 and 60,000 characters." };
+  }
+
+  if (text.length < 10 || text.length > 60000) {
+    return { error: "Campaign text must be between 10 and 60,000 characters." };
+  }
+
+  return { data: { subject, previewText, html, text, limit } };
+}
+
+async function ensureMarketingTables(queryable) {
+  if (marketingTablesReady) {
+    return;
+  }
+
+  await queryable.query(`
+    CREATE TABLE IF NOT EXISTS email_subscribers (
+      id BIGSERIAL PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      email TEXT NOT NULL UNIQUE,
+      name TEXT,
+      clinic TEXT,
+      source TEXT NOT NULL DEFAULT 'manual import',
+      consent_note TEXT NOT NULL,
+      unsubscribe_token TEXT NOT NULL UNIQUE,
+      unsubscribed_at TIMESTAMPTZ,
+      last_sent_at TIMESTAMPTZ
+    )
+  `);
+
+  await queryable.query(`
+    CREATE TABLE IF NOT EXISTS email_campaigns (
+      id BIGSERIAL PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      subject TEXT NOT NULL,
+      preview_text TEXT,
+      html TEXT NOT NULL,
+      text TEXT NOT NULL,
+      from_email TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'created',
+      total_recipients INTEGER NOT NULL DEFAULT 0,
+      sent_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+
+  await queryable.query(`
+    CREATE TABLE IF NOT EXISTS email_campaign_recipients (
+      id BIGSERIAL PRIMARY KEY,
+      campaign_id BIGINT NOT NULL REFERENCES email_campaigns(id) ON DELETE CASCADE,
+      subscriber_id BIGINT NOT NULL REFERENCES email_subscribers(id) ON DELETE CASCADE,
+      email TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      resend_id TEXT,
+      error TEXT,
+      sent_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (campaign_id, subscriber_id)
+    )
+  `);
+
+  marketingTablesReady = true;
+}
+
+async function upsertMarketingSubscribers(payload, queryable = getDatabasePool()) {
+  if (!queryable) {
+    return { saved: false, reason: "DATABASE_NOT_CONFIGURED" };
+  }
+
+  const subscribers = Array.isArray(payload.subscribers) ? payload.subscribers : [];
+  const maxImport = Math.max(1, Number(process.env.EMAIL_IMPORT_MAX_SUBSCRIBERS || 1000));
+
+  if (subscribers.length < 1) {
+    throw new Error("Add at least one subscriber.");
+  }
+
+  if (subscribers.length > maxImport) {
+    throw new Error(`Import is too large. Send ${maxImport} subscribers or fewer at a time.`);
+  }
+
+  await ensureMarketingTables(queryable);
+
+  const results = [];
+  const resubscribe = payload.resubscribe === true;
+
+  for (const rawSubscriber of subscribers) {
+    const validation = validateMarketingSubscriber(rawSubscriber, payload.consent_note);
+
+    if (validation.error) {
+      throw new Error(validation.error);
+    }
+
+    const subscriber = validation.data;
+    const token = randomBytes(24).toString("hex");
+    const result = await queryable.query(
+      `
+        INSERT INTO email_subscribers (
+          email,
+          name,
+          clinic,
+          source,
+          consent_note,
+          unsubscribe_token,
+          unsubscribed_at,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, NULL, NOW())
+        ON CONFLICT (email) DO UPDATE
+        SET name = COALESCE(EXCLUDED.name, email_subscribers.name),
+            clinic = COALESCE(EXCLUDED.clinic, email_subscribers.clinic),
+            source = EXCLUDED.source,
+            consent_note = EXCLUDED.consent_note,
+            updated_at = NOW(),
+            unsubscribed_at = CASE WHEN $7::boolean THEN NULL ELSE email_subscribers.unsubscribed_at END
+        RETURNING id, email, unsubscribed_at
+      `,
+      [
+        subscriber.email,
+        subscriber.name,
+        subscriber.clinic,
+        subscriber.source,
+        subscriber.consentNote,
+        token,
+        resubscribe,
+      ]
+    );
+
+    results.push(result.rows[0]);
+  }
+
+  return {
+    saved: true,
+    imported: results.length,
+    active: results.filter((subscriber) => !subscriber.unsubscribed_at).length,
+    unsubscribed: results.filter((subscriber) => subscriber.unsubscribed_at).length,
+  };
+}
+
+async function marketingSubscriberStats(queryable = getDatabasePool()) {
+  if (!queryable) {
+    return { saved: false, reason: "DATABASE_NOT_CONFIGURED" };
+  }
+
+  await ensureMarketingTables(queryable);
+
+  const result = await queryable.query(`
+    SELECT
+      COUNT(*)::int AS total,
+      COUNT(*) FILTER (WHERE unsubscribed_at IS NULL)::int AS active,
+      COUNT(*) FILTER (WHERE unsubscribed_at IS NOT NULL)::int AS unsubscribed
+    FROM email_subscribers
+  `);
+
+  return { saved: true, ...result.rows[0] };
+}
+
+async function createMarketingCampaign(payload, queryable = getDatabasePool()) {
+  if (!queryable) {
+    return { saved: false, reason: "DATABASE_NOT_CONFIGURED" };
+  }
+
+  const validation = validateCampaignPayload(payload);
+
+  if (validation.error) {
+    throw new Error(validation.error);
+  }
+
+  await ensureMarketingTables(queryable);
+
+  const campaign = validation.data;
+  const created = await queryable.query(
+    `
+      INSERT INTO email_campaigns (subject, preview_text, html, text, from_email, status)
+      VALUES ($1, $2, $3, $4, $5, 'queued')
+      RETURNING id, subject
+    `,
+    [campaign.subject, campaign.previewText || null, campaign.html, campaign.text, campaignFromEmail()]
+  );
+  const campaignId = created.rows[0].id;
+
+  const recipients = await queryable.query(
+    `
+      WITH selected AS (
+        SELECT id, email
+        FROM email_subscribers
+        WHERE unsubscribed_at IS NULL
+        ORDER BY created_at ASC
+        LIMIT $2
+      )
+      INSERT INTO email_campaign_recipients (campaign_id, subscriber_id, email)
+      SELECT $1, selected.id, selected.email
+      FROM selected
+      ON CONFLICT (campaign_id, subscriber_id) DO NOTHING
+      RETURNING id
+    `,
+    [campaignId, campaign.limit]
+  );
+
+  const status = recipients.rowCount > 0 ? "queued" : "empty";
+  await queryable.query(
+    `
+      UPDATE email_campaigns
+      SET total_recipients = $1,
+          status = $2
+      WHERE id = $3
+    `,
+    [recipients.rowCount, status, campaignId]
+  );
+
+  return {
+    saved: true,
+    campaignId,
+    subject: created.rows[0].subject,
+    queued: recipients.rowCount,
+  };
+}
+
+function campaignEmailContent(campaign, subscriber) {
+  const unsubscribeUrl = `${publicSiteUrl()}/unsubscribe?token=${encodeURIComponent(
+    subscriber.unsubscribe_token
+  )}`;
+  const address = campaignFooterAddress();
+  const safeUnsubscribeUrl = escapeHtml(unsubscribeUrl);
+  const safeAddress = escapeHtml(address);
+  const html = `
+    ${campaign.html}
+    <hr style="border:0;border-top:1px solid #e5e7eb;margin:28px 0 18px;">
+    <p style="color:#667085;font-size:13px;line-height:1.5;">
+      You are receiving this because you asked to hear from Dental Motion or gave permission to be contacted about dental motion graphic videos.
+      <br>
+      ${safeAddress}
+      <br>
+      <a href="${safeUnsubscribeUrl}">Unsubscribe</a>
+    </p>
+  `;
+  const text = `${campaign.text}\n\n---\nYou are receiving this because you asked to hear from Dental Motion or gave permission to be contacted about dental motion graphic videos.\n${address}\nUnsubscribe: ${unsubscribeUrl}`;
+
+  return { html, text, unsubscribeUrl };
+}
+
+async function sendMarketingEmail(campaign, subscriber, fetchImpl = fetch) {
+  const config = campaignConfig();
+
+  if (!config) {
+    const error = new Error("Resend is not configured yet.");
+    error.code = "EMAIL_NOT_CONFIGURED";
+    throw error;
+  }
+
+  if (process.env.EMAIL_CAMPAIGN_DRY_RUN === "true") {
+    return { id: "dry-run", provider: "resend", dryRun: true };
+  }
+
+  const content = campaignEmailContent(campaign, subscriber);
+  const response = await fetchImpl("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: config.fromEmail,
+      to: [subscriber.email],
+      reply_to: contactRecipient,
+      subject: campaign.subject,
+      html: content.html,
+      text: content.text,
+      headers: {
+        "List-Unsubscribe": `<${content.unsubscribeUrl}>`,
+      },
+    }),
+  });
+
+  const detail = await response.text();
+
+  if (!response.ok) {
+    const error = new Error(`Resend campaign email failed with ${response.status}: ${detail}`);
+    error.code = "EMAIL_SEND_FAILED";
+    throw error;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(detail);
+  } catch {
+    parsed = {};
+  }
+
+  return { id: parsed.id || null, provider: "resend", dryRun: false };
+}
+
+async function sendMarketingCampaign(campaignId, options = {}, queryable = getDatabasePool()) {
+  if (!queryable) {
+    return { sent: false, reason: "DATABASE_NOT_CONFIGURED" };
+  }
+
+  await ensureMarketingTables(queryable);
+
+  const campaignResult = await queryable.query(
+    `
+      SELECT id, subject, html, text, status
+      FROM email_campaigns
+      WHERE id = $1
+    `,
+    [campaignId]
+  );
+
+  if (campaignResult.rowCount === 0) {
+    throw new Error("Campaign not found.");
+  }
+
+  const maxBatch = Math.max(1, Number(process.env.EMAIL_CAMPAIGN_BATCH_SIZE || 100));
+  const limit = boundedPositiveInteger(options.limit, maxBatch, maxBatch);
+  const pending = await queryable.query(
+    `
+      SELECT
+        recipients.id AS recipient_id,
+        recipients.email,
+        subscribers.unsubscribe_token
+      FROM email_campaign_recipients recipients
+      JOIN email_subscribers subscribers ON subscribers.id = recipients.subscriber_id
+      WHERE recipients.campaign_id = $1
+        AND recipients.status = 'pending'
+        AND subscribers.unsubscribed_at IS NULL
+      ORDER BY recipients.id ASC
+      LIMIT $2
+    `,
+    [campaignId, limit]
+  );
+
+  if (pending.rowCount === 0) {
+    await queryable.query("UPDATE email_campaigns SET status = 'sent' WHERE id = $1", [campaignId]);
+    return { sent: true, campaignId, attempted: 0, sentCount: 0, failedCount: 0 };
+  }
+
+  await queryable.query("UPDATE email_campaigns SET status = 'sending' WHERE id = $1", [campaignId]);
+
+  let sentCount = 0;
+  let failedCount = 0;
+  const campaign = campaignResult.rows[0];
+  const waitMs = Math.min(Math.max(0, Number(process.env.EMAIL_CAMPAIGN_DELAY_MS || 250)), 5000);
+
+  for (const recipient of pending.rows) {
+    try {
+      const delivery = await sendMarketingEmail(campaign, recipient, options.fetchImpl || fetch);
+      await queryable.query(
+        `
+          UPDATE email_campaign_recipients
+          SET status = 'sent',
+              resend_id = $1,
+              error = NULL,
+              sent_at = NOW()
+          WHERE id = $2
+        `,
+        [delivery.id, recipient.recipient_id]
+      );
+      await queryable.query(
+        `
+          UPDATE email_subscribers
+          SET last_sent_at = NOW(),
+              updated_at = NOW()
+          WHERE email = $1
+        `,
+        [recipient.email]
+      );
+      sentCount += 1;
+    } catch (error) {
+      await queryable.query(
+        `
+          UPDATE email_campaign_recipients
+          SET status = 'failed',
+              error = $1
+          WHERE id = $2
+        `,
+        [String(error.message || error).slice(0, 1000), recipient.recipient_id]
+      );
+      failedCount += 1;
+    }
+
+    if (waitMs > 0) {
+      await delay(waitMs);
+    }
+  }
+
+  const remaining = await queryable.query(
+    `
+      SELECT COUNT(*)::int AS count
+      FROM email_campaign_recipients
+      WHERE campaign_id = $1
+        AND status = 'pending'
+    `,
+    [campaignId]
+  );
+  const finalStatus = remaining.rows[0].count === 0 ? "sent" : "queued";
+
+  await queryable.query(
+    `
+      UPDATE email_campaigns
+      SET sent_count = (
+            SELECT COUNT(*)::int
+            FROM email_campaign_recipients
+            WHERE campaign_id = $1 AND status = 'sent'
+          ),
+          failed_count = (
+            SELECT COUNT(*)::int
+            FROM email_campaign_recipients
+            WHERE campaign_id = $1 AND status = 'failed'
+          ),
+          status = $2
+      WHERE id = $1
+    `,
+    [campaignId, finalStatus]
+  );
+
+  return {
+    sent: true,
+    campaignId,
+    attempted: pending.rowCount,
+    sentCount,
+    failedCount,
+    remaining: remaining.rows[0].count,
+    status: finalStatus,
+  };
+}
+
+async function unsubscribeMarketingSubscriber(token, queryable = getDatabasePool()) {
+  if (!queryable) {
+    return { saved: false, reason: "DATABASE_NOT_CONFIGURED" };
+  }
+
+  await ensureMarketingTables(queryable);
+
+  const result = await queryable.query(
+    `
+      UPDATE email_subscribers
+      SET unsubscribed_at = COALESCE(unsubscribed_at, NOW()),
+          updated_at = NOW()
+      WHERE unsubscribe_token = $1
+      RETURNING email
+    `,
+    [token]
+  );
+
+  if (result.rowCount === 0) {
+    return { saved: true, unsubscribed: false };
+  }
+
+  return { saved: true, unsubscribed: true, email: result.rows[0].email };
+}
+
 async function sendContactEmail(contact, transportFactory = nodemailer.createTransport) {
   if (process.env.CONTACT_DRY_RUN === "true") {
     return { dryRun: true };
@@ -381,9 +1005,213 @@ async function handleContact(request, response) {
   }
 }
 
+async function handleAdminSubscribers(request, response) {
+  if (!requireMarketingAdmin(request, response)) {
+    return;
+  }
+
+  if (request.method === "GET") {
+    const stats = await marketingSubscriberStats();
+
+    if (!stats.saved) {
+      sendJson(response, 503, {
+        ok: false,
+        message: "Database is not connected yet.",
+      });
+      return;
+    }
+
+    sendJson(response, 200, { ok: true, stats });
+    return;
+  }
+
+  if (request.method !== "POST") {
+    sendJson(response, 405, { ok: false, message: "Method not allowed." });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = await readJsonBody(request);
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: error.message });
+    return;
+  }
+
+  try {
+    const result = await upsertMarketingSubscribers(payload);
+
+    if (!result.saved) {
+      sendJson(response, 503, {
+        ok: false,
+        message: "Database is not connected yet.",
+      });
+      return;
+    }
+
+    sendJson(response, 200, { ok: true, ...result });
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: error.message });
+  }
+}
+
+async function handleAdminCampaigns(request, response) {
+  if (!requireMarketingAdmin(request, response)) {
+    return;
+  }
+
+  if (request.method !== "POST") {
+    sendJson(response, 405, { ok: false, message: "Method not allowed." });
+    return;
+  }
+
+  let payload;
+  try {
+    payload = await readJsonBody(request);
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: error.message });
+    return;
+  }
+
+  try {
+    const created = await createMarketingCampaign(payload);
+
+    if (!created.saved) {
+      sendJson(response, 503, {
+        ok: false,
+        message: "Database is not connected yet.",
+      });
+      return;
+    }
+
+    let delivery = null;
+    if (payload.send !== false && created.queued > 0) {
+      delivery = await sendMarketingCampaign(created.campaignId, { limit: payload.batch_size });
+    }
+
+    sendJson(response, 200, { ok: true, campaign: created, delivery });
+  } catch (error) {
+    const statusCode = error.code === "EMAIL_NOT_CONFIGURED" ? 503 : 400;
+    sendJson(response, statusCode, { ok: false, message: error.message });
+  }
+}
+
+async function handleAdminCampaignSend(request, response, campaignId) {
+  if (!requireMarketingAdmin(request, response)) {
+    return;
+  }
+
+  if (request.method !== "POST") {
+    sendJson(response, 405, { ok: false, message: "Method not allowed." });
+    return;
+  }
+
+  let payload = {};
+  try {
+    payload = await readJsonBody(request);
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: error.message });
+    return;
+  }
+
+  try {
+    const delivery = await sendMarketingCampaign(campaignId, { limit: payload.batch_size });
+
+    if (!delivery.sent) {
+      sendJson(response, 503, {
+        ok: false,
+        message: "Database is not connected yet.",
+      });
+      return;
+    }
+
+    sendJson(response, 200, { ok: true, delivery });
+  } catch (error) {
+    const statusCode = error.code === "EMAIL_NOT_CONFIGURED" ? 503 : 400;
+    sendJson(response, statusCode, { ok: false, message: error.message });
+  }
+}
+
+async function handleUnsubscribe(request, response, url) {
+  if (request.method !== "GET" && request.method !== "POST") {
+    sendHtml(response, 405, "<h1>Method not allowed</h1>");
+    return;
+  }
+
+  const token = clean(url.searchParams.get("token"));
+
+  if (!token) {
+    sendHtml(response, 400, "<h1>Missing unsubscribe token</h1>");
+    return;
+  }
+
+  const result = await unsubscribeMarketingSubscriber(token);
+
+  if (!result.saved) {
+    sendHtml(response, 503, "<h1>Unsubscribe is not available right now</h1>");
+    return;
+  }
+
+  if (!result.unsubscribed) {
+    sendHtml(response, 404, "<h1>Unsubscribe link not found</h1>");
+    return;
+  }
+
+  sendHtml(
+    response,
+    200,
+    `
+      <!doctype html>
+      <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>Unsubscribed | Dental Motion</title>
+          <style>
+            body { margin: 0; min-height: 100vh; display: grid; place-items: center; font-family: Georgia, serif; color: #10242f; background: #fff8ed; }
+            main { max-width: 520px; padding: 40px; text-align: center; }
+            a { color: #0f766e; }
+          </style>
+        </head>
+        <body>
+          <main>
+            <h1>You are unsubscribed</h1>
+            <p>${escapeHtml(result.email)} will no longer receive Dental Motion emails.</p>
+            <p><a href="/">Return to Dental Motion</a></p>
+          </main>
+        </body>
+      </html>
+    `
+  );
+}
+
 async function handleRequest(request, response) {
-  if ((request.url || "").split("?")[0] === "/api/contact") {
+  const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
+  const path = url.pathname;
+  const campaignSendMatch = path.match(/^\/api\/admin\/campaigns\/(\d+)\/send$/);
+
+  if (path === "/api/contact") {
     await handleContact(request, response);
+    return;
+  }
+
+  if (path === "/api/admin/subscribers") {
+    await handleAdminSubscribers(request, response);
+    return;
+  }
+
+  if (path === "/api/admin/campaigns") {
+    await handleAdminCampaigns(request, response);
+    return;
+  }
+
+  if (campaignSendMatch) {
+    await handleAdminCampaignSend(request, response, campaignSendMatch[1]);
+    return;
+  }
+
+  if (path === "/unsubscribe") {
+    await handleUnsubscribe(request, response, url);
     return;
   }
 
@@ -414,13 +1242,23 @@ if (require.main === module) {
 }
 
 module.exports = {
+  campaignEmailContent,
+  createMarketingCampaign,
   contactEmailContent,
   databaseConfig,
+  ensureMarketingTables,
   handleRequest,
+  requireMarketingAdmin,
   resendConfig,
+  sendMarketingCampaign,
   sendContactEmail,
+  sendMarketingEmail,
   saveContactSubmission,
   smtpConfig,
+  unsubscribeMarketingSubscriber,
   updateContactEmailStatus,
+  upsertMarketingSubscribers,
   validateContact,
+  validateCampaignPayload,
+  validateMarketingSubscriber,
 };

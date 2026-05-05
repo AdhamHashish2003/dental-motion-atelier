@@ -7,3 +7,7 @@ verified-*.png
 test-results/
 playwright-report/
 .DS_Store
+subscribers.json
+campaign.json
+scripts/subscribers.json
+scripts/campaign.json

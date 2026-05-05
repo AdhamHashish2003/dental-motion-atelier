@@ -62,3 +62,85 @@ from a terminal with:
 ```bash
 railway connect Postgres
 ```
+
+## Railway Email Campaigns
+
+The app also includes a Railway-hosted, admin-only campaign sender for
+permission-based email lists. It uses Resend with
+`team@dentalmotiongraphic.com`, saves subscribers and campaign history in
+Postgres, and adds unsubscribe links to every campaign email.
+
+Required Railway variables:
+
+```bash
+EMAIL_ADMIN_TOKEN=<long random secret>
+PUBLIC_SITE_URL=https://dentalmotiongraphic.com
+EMAIL_CAMPAIGN_FROM_EMAIL=Dental Motion <team@dentalmotiongraphic.com>
+EMAIL_FOOTER_ADDRESS=Dental Motion, dentalmotiongraphic.com
+EMAIL_CAMPAIGN_BATCH_SIZE=50
+EMAIL_CAMPAIGN_DELAY_MS=250
+EMAIL_CAMPAIGN_MAX_RECIPIENTS=500
+```
+
+Only import people who gave permission to receive email. Every import must
+include a `consent_note`.
+
+Example subscriber import file:
+
+```json
+{
+  "consent_note": "These clinics asked to receive Dental Motion email updates.",
+  "subscribers": [
+    {
+      "email": "owner@example.com",
+      "name": "Clinic Owner",
+      "clinic": "Example Dental",
+      "source": "manual list"
+    }
+  ]
+}
+```
+
+Import subscribers through Railway:
+
+```bash
+railway run --service dental-motion-atelier node scripts/email-admin.js import subscribers.json
+```
+
+Example campaign file:
+
+```json
+{
+  "subject": "Dental motion graphic videos for your clinic",
+  "preview_text": "Show treatments clearly with elegant dental animation.",
+  "html": "<h1>Dental motion graphic videos</h1><p>We create colorful, elegant dental motion graphic videos for clinics and dental brands.</p><p>Reply to this email if you want a short custom video quote.</p>",
+  "text": "Dental motion graphic videos\n\nWe create colorful, elegant dental motion graphic videos for clinics and dental brands.\n\nReply to this email if you want a short custom video quote.",
+  "limit": 100,
+  "batch_size": 50,
+  "send": true
+}
+```
+
+Send a campaign through Railway:
+
+```bash
+railway run --service dental-motion-atelier node scripts/email-admin.js send campaign.json
+```
+
+Check subscriber totals:
+
+```bash
+railway run --service dental-motion-atelier node scripts/email-admin.js stats
+```
+
+The app creates these tables automatically:
+
+```sql
+SELECT email, name, clinic, source, unsubscribed_at, last_sent_at
+FROM email_subscribers
+ORDER BY created_at DESC;
+
+SELECT id, subject, status, total_recipients, sent_count, failed_count
+FROM email_campaigns
+ORDER BY created_at DESC;
+```
