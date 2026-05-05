@@ -4,7 +4,10 @@ const test = require("node:test");
 const {
   campaignEmailContent,
   contactEmailContent,
+  dailyCampaignConfig,
   handleRequest,
+  localDateTimeParts,
+  parseDailyTime,
   resendConfig,
   requireMarketingAdmin,
   sendMarketingEmail,
@@ -291,4 +294,45 @@ test("marketing email sends through Resend with domain sender and list unsubscri
   delete process.env.RESEND_KEY;
   delete process.env.EMAIL_CAMPAIGN_FROM_EMAIL;
   delete process.env.PUBLIC_SITE_URL;
+});
+
+test("daily campaign config is explicit and limited", () => {
+  delete process.env.EMAIL_DAILY_ENABLED;
+  assert.deepEqual(dailyCampaignConfig(), {
+    enabled: false,
+    reason: "EMAIL_DAILY_ENABLED is not true.",
+  });
+
+  process.env.EMAIL_DAILY_ENABLED = "true";
+  process.env.EMAIL_DAILY_CAMPAIGN_ID = "12";
+  process.env.EMAIL_DAILY_LIMIT = "999";
+  process.env.EMAIL_DAILY_TIME = "09:30";
+  process.env.EMAIL_DAILY_TIME_ZONE = "America/Los_Angeles";
+
+  const config = dailyCampaignConfig();
+
+  assert.equal(config.enabled, true);
+  assert.equal(config.campaignId, "12");
+  assert.equal(config.limit, 500);
+  assert.deepEqual(config.sendTime, { hour: 9, minute: 30, minutes: 570 });
+  assert.equal(config.timeZone, "America/Los_Angeles");
+
+  delete process.env.EMAIL_DAILY_ENABLED;
+  delete process.env.EMAIL_DAILY_CAMPAIGN_ID;
+  delete process.env.EMAIL_DAILY_LIMIT;
+  delete process.env.EMAIL_DAILY_TIME;
+  delete process.env.EMAIL_DAILY_TIME_ZONE;
+});
+
+test("daily campaign time helpers understand local schedule", () => {
+  assert.deepEqual(parseDailyTime("08:05"), { hour: 8, minute: 5, minutes: 485 });
+  assert.equal(parseDailyTime("25:00"), null);
+
+  const parts = localDateTimeParts(
+    new Date("2026-05-05T16:15:00.000Z"),
+    "America/Los_Angeles"
+  );
+
+  assert.equal(parts.date, "2026-05-05");
+  assert.equal(parts.minutes, 555);
 });

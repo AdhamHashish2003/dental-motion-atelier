@@ -491,6 +491,23 @@ async function ensureMarketingTables(queryable) {
     )
   `);
 
+  await queryable.query(`
+    CREATE TABLE IF NOT EXISTS email_daily_runs (
+      id BIGSERIAL PRIMARY KEY,
+      campaign_id BIGINT NOT NULL REFERENCES email_campaigns(id) ON DELETE CASCADE,
+      run_date DATE NOT NULL,
+      status TEXT NOT NULL DEFAULT 'running',
+      attempted INTEGER NOT NULL DEFAULT 0,
+      sent_count INTEGER NOT NULL DEFAULT 0,
+      failed_count INTEGER NOT NULL DEFAULT 0,
+      remaining INTEGER,
+      error TEXT,
+      started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      finished_at TIMESTAMPTZ,
+      UNIQUE (campaign_id, run_date)
+    )
+  `);
+
   marketingTablesReady = true;
 }
 
@@ -855,6 +872,199 @@ async function sendMarketingCampaign(campaignId, options = {}, queryable = getDa
   };
 }
 
+function parseDailyTime(value = "09:00") {
+  const match = String(value || "").match(/^(\d{1,2}):(\d{2})$/);
+
+  if (!match) {
+    return null;
+  }
+
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    return null;
+  }
+
+  return { hour, minute, minutes: hour * 60 + minute };
+}
+
+function localDateTimeParts(date = new Date(), timeZone = "America/Los_Angeles") {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+    minute: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  const hour = Number(values.hour);
+  const minute = Number(values.minute);
+
+  return {
+    date: `${values.year}-${values.month}-${values.day}`,
+    minutes: hour * 60 + minute,
+  };
+}
+
+function dailyCampaignConfig() {
+  if (process.env.EMAIL_DAILY_ENABLED !== "true") {
+    return { enabled: false, reason: "EMAIL_DAILY_ENABLED is not true." };
+  }
+
+  const campaignId = clean(process.env.EMAIL_DAILY_CAMPAIGN_ID);
+
+  if (!/^\d+$/.test(campaignId)) {
+    return { enabled: false, reason: "EMAIL_DAILY_CAMPAIGN_ID is missing or invalid." };
+  }
+
+  const sendTime = parseDailyTime(process.env.EMAIL_DAILY_TIME || "09:00");
+
+  if (!sendTime) {
+    return { enabled: false, reason: "EMAIL_DAILY_TIME must be HH:MM in 24-hour format." };
+  }
+
+  return {
+    campaignId,
+    enabled: true,
+    limit: boundedPositiveInteger(process.env.EMAIL_DAILY_LIMIT, 15, 500),
+    sendTime,
+    timeZone: process.env.EMAIL_DAILY_TIME_ZONE || "America/Los_Angeles",
+  };
+}
+
+async function runDailyMarketingCampaign(now = new Date(), queryable = getDatabasePool()) {
+  const config = dailyCampaignConfig();
+
+  if (!config.enabled) {
+    return { ran: false, reason: config.reason };
+  }
+
+  if (!queryable) {
+    return { ran: false, reason: "DATABASE_NOT_CONFIGURED" };
+  }
+
+  await ensureMarketingTables(queryable);
+
+  const local = localDateTimeParts(now, config.timeZone);
+
+  if (local.minutes < config.sendTime.minutes) {
+    return {
+      ran: false,
+      reason: "TOO_EARLY",
+      date: local.date,
+      timeZone: config.timeZone,
+    };
+  }
+
+  const run = await queryable.query(
+    `
+      INSERT INTO email_daily_runs (campaign_id, run_date, status)
+      VALUES ($1, $2, 'running')
+      ON CONFLICT (campaign_id, run_date) DO NOTHING
+      RETURNING id
+    `,
+    [config.campaignId, local.date]
+  );
+
+  if (run.rowCount === 0) {
+    return {
+      ran: false,
+      reason: "ALREADY_RAN",
+      campaignId: config.campaignId,
+      date: local.date,
+    };
+  }
+
+  const runId = run.rows[0].id;
+
+  try {
+    const delivery = await sendMarketingCampaign(
+      config.campaignId,
+      { limit: config.limit },
+      queryable
+    );
+    await queryable.query(
+      `
+        UPDATE email_daily_runs
+        SET status = $1,
+            attempted = $2,
+            sent_count = $3,
+            failed_count = $4,
+            remaining = $5,
+            error = NULL,
+            finished_at = NOW()
+        WHERE id = $6
+      `,
+      [
+        delivery.failedCount > 0 ? "completed_with_errors" : "completed",
+        delivery.attempted || 0,
+        delivery.sentCount || 0,
+        delivery.failedCount || 0,
+        delivery.remaining || 0,
+        runId,
+      ]
+    );
+
+    return {
+      ran: true,
+      campaignId: config.campaignId,
+      date: local.date,
+      delivery,
+    };
+  } catch (error) {
+    await queryable.query(
+      `
+        UPDATE email_daily_runs
+        SET status = 'failed',
+            error = $1,
+            finished_at = NOW()
+        WHERE id = $2
+      `,
+      [String(error.message || error).slice(0, 1000), runId]
+    );
+
+    throw error;
+  }
+}
+
+function startDailyCampaignScheduler() {
+  const config = dailyCampaignConfig();
+
+  if (!config.enabled) {
+    if (process.env.EMAIL_DAILY_ENABLED === "true") {
+      console.warn(`Daily email sender is not active: ${config.reason}`);
+    }
+    return null;
+  }
+
+  const intervalMs = boundedPositiveInteger(
+    process.env.EMAIL_DAILY_CHECK_INTERVAL_MS,
+    15 * 60 * 1000,
+    6 * 60 * 60 * 1000
+  );
+  const check = async () => {
+    try {
+      const result = await runDailyMarketingCampaign();
+      if (result.ran) {
+        console.log(
+          `Daily email sender sent ${result.delivery.sentCount} emails for campaign ${result.campaignId}.`
+        );
+      }
+    } catch (error) {
+      console.error("Daily email sender failed:", error);
+    }
+  };
+
+  console.log(
+    `Daily email sender armed for campaign ${config.campaignId}: ${config.limit} emails at ${process.env.EMAIL_DAILY_TIME || "09:00"} ${config.timeZone}.`
+  );
+  setTimeout(check, 5000);
+  return setInterval(check, intervalMs);
+}
+
 async function unsubscribeMarketingSubscriber(token, queryable = getDatabasePool()) {
   if (!queryable) {
     return { saved: false, reason: "DATABASE_NOT_CONFIGURED" };
@@ -1132,6 +1342,34 @@ async function handleAdminCampaignSend(request, response, campaignId) {
   }
 }
 
+async function handleAdminDailySend(request, response) {
+  if (!requireMarketingAdmin(request, response)) {
+    return;
+  }
+
+  if (request.method !== "POST") {
+    sendJson(response, 405, { ok: false, message: "Method not allowed." });
+    return;
+  }
+
+  try {
+    const result = await runDailyMarketingCampaign();
+
+    if (result.reason === "DATABASE_NOT_CONFIGURED") {
+      sendJson(response, 503, {
+        ok: false,
+        message: "Database is not connected yet.",
+      });
+      return;
+    }
+
+    sendJson(response, 200, { ok: true, daily: result });
+  } catch (error) {
+    const statusCode = error.code === "EMAIL_NOT_CONFIGURED" ? 503 : 400;
+    sendJson(response, statusCode, { ok: false, message: error.message });
+  }
+}
+
 async function handleUnsubscribe(request, response, url) {
   if (request.method !== "GET" && request.method !== "POST") {
     sendHtml(response, 405, "<h1>Method not allowed</h1>");
@@ -1210,6 +1448,11 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (path === "/api/admin/daily/send") {
+    await handleAdminDailySend(request, response);
+    return;
+  }
+
   if (path === "/unsubscribe") {
     await handleUnsubscribe(request, response, url);
     return;
@@ -1238,6 +1481,7 @@ if (require.main === module) {
     });
   }).listen(port, () => {
   console.log(`Dental Motion Atelier is running on port ${port}`);
+  startDailyCampaignScheduler();
   });
 }
 
@@ -1245,14 +1489,19 @@ module.exports = {
   campaignEmailContent,
   createMarketingCampaign,
   contactEmailContent,
+  dailyCampaignConfig,
   databaseConfig,
   ensureMarketingTables,
   handleRequest,
+  localDateTimeParts,
+  parseDailyTime,
   requireMarketingAdmin,
+  runDailyMarketingCampaign,
   resendConfig,
   sendMarketingCampaign,
   sendContactEmail,
   sendMarketingEmail,
+  startDailyCampaignScheduler,
   saveContactSubmission,
   smtpConfig,
   unsubscribeMarketingSubscriber,

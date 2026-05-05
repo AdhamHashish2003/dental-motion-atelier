@@ -80,6 +80,10 @@ EMAIL_FOOTER_ADDRESS=Dental Motion, dentalmotiongraphic.com
 EMAIL_CAMPAIGN_BATCH_SIZE=50
 EMAIL_CAMPAIGN_DELAY_MS=250
 EMAIL_CAMPAIGN_MAX_RECIPIENTS=500
+EMAIL_DAILY_ENABLED=false
+EMAIL_DAILY_LIMIT=15
+EMAIL_DAILY_TIME=09:00
+EMAIL_DAILY_TIME_ZONE=America/Los_Angeles
 ```
 
 Only import people who gave permission to receive email. Every import must
@@ -141,6 +145,50 @@ Check subscriber totals:
 railway run --service dental-motion-atelier node scripts/email-admin.js stats
 ```
 
+### Send 15 Emails Per Day
+
+To drip a campaign instead of sending everything at once, create the campaign
+with `"send": false`:
+
+```json
+{
+  "subject": "Dental motion graphic videos for your clinic",
+  "preview_text": "Show treatments clearly with elegant dental animation.",
+  "html": "<h1>Dental motion graphic videos</h1><p>We create colorful, elegant dental motion graphic videos for clinics and dental brands.</p><p>Reply to this email if you want a short custom video quote.</p>",
+  "text": "Dental motion graphic videos\n\nWe create colorful, elegant dental motion graphic videos for clinics and dental brands.\n\nReply to this email if you want a short custom video quote.",
+  "limit": 500,
+  "send": false
+}
+```
+
+Create the queued campaign:
+
+```bash
+railway run --service dental-motion-atelier node scripts/email-admin.js send campaign.json
+```
+
+Copy the `campaignId` from the output, then set the daily sender variables in
+Railway:
+
+```bash
+railway variable set --service dental-motion-atelier \
+  EMAIL_DAILY_ENABLED=true \
+  EMAIL_DAILY_CAMPAIGN_ID=<campaignId> \
+  EMAIL_DAILY_LIMIT=15 \
+  EMAIL_DAILY_TIME=09:00 \
+  EMAIL_DAILY_TIME_ZONE=America/Los_Angeles
+```
+
+After deploy/restart, Railway will send up to 15 pending emails once per day.
+Each daily run is recorded in `email_daily_runs`, so a restart will not send the
+same day's batch twice.
+
+To manually trigger today's daily check:
+
+```bash
+railway run --service dental-motion-atelier node scripts/email-admin.js daily
+```
+
 The app creates these tables automatically:
 
 ```sql
@@ -151,4 +199,8 @@ ORDER BY created_at DESC;
 SELECT id, subject, status, total_recipients, sent_count, failed_count
 FROM email_campaigns
 ORDER BY created_at DESC;
+
+SELECT campaign_id, run_date, status, attempted, sent_count, failed_count, remaining
+FROM email_daily_runs
+ORDER BY run_date DESC;
 ```

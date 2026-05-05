@@ -12,6 +12,7 @@ Usage:
   node scripts/email-admin.js import subscribers.json
   node scripts/email-admin.js send campaign.json
   node scripts/email-admin.js send-next <campaign_id>
+  node scripts/email-admin.js daily
 
 Run through Railway so EMAIL_ADMIN_TOKEN is loaded:
   railway run --service dental-motion-atelier node scripts/email-admin.js stats
@@ -110,6 +111,20 @@ async function main() {
     console.log(
       JSON.stringify(
         await request(`/api/admin/campaigns/${encodeURIComponent(arg)}/send`, {
+          method: "POST",
+          body: "{}",
+        }),
+        null,
+        2
+      )
+    );
+    return;
+  }
+
+  if (command === "daily") {
+    console.log(
+      JSON.stringify(
+        await request("/api/admin/daily/send", {
           method: "POST",
           body: "{}",
         }),
