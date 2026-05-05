@@ -85,16 +85,20 @@ async function main() {
 
   if (command === "send") {
     const payload = readJsonFile(arg);
-    console.log(
-      JSON.stringify(
-        await request("/api/admin/campaigns", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        }),
-        null,
-        2
-      )
-    );
+    let result = await request("/api/admin/campaigns", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+    console.log(JSON.stringify(result, null, 2));
+
+    while (payload.send !== false && result.delivery && result.delivery.remaining > 0) {
+      result = await request(`/api/admin/campaigns/${result.campaign.campaignId}/send`, {
+        method: "POST",
+        body: JSON.stringify({ batch_size: payload.batch_size }),
+      });
+      console.log(JSON.stringify(result, null, 2));
+    }
+
     return;
   }
 

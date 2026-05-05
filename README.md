@@ -127,6 +127,14 @@ Send a campaign through Railway:
 railway run --service dental-motion-atelier node scripts/email-admin.js send campaign.json
 ```
 
+The `send` command keeps sending the next Railway batch until the campaign is
+finished. If a campaign was created with `"send": false`, send the next batch
+manually:
+
+```bash
+railway run --service dental-motion-atelier node scripts/email-admin.js send-next <campaign_id>
+```
+
 Check subscriber totals:
 
 ```bash
