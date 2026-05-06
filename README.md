@@ -104,6 +104,9 @@ EMAIL_DAILY_ENABLED=false
 EMAIL_DAILY_LIMIT=15
 EMAIL_DAILY_TIME=09:00
 EMAIL_DAILY_TIME_ZONE=America/Los_Angeles
+LEAD_FETCH_LIMIT=120
+LEAD_FETCH_WEBSITE_SCAN_LIMIT=80
+LEAD_FETCH_CONCURRENCY=6
 ```
 
 Only import people who gave permission to receive email. Every import must

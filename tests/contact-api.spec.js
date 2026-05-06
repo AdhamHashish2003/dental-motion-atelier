@@ -9,6 +9,8 @@ const {
   handleRequest,
   leadLocationFromCommand,
   localDateTimeParts,
+  normalizeEmail,
+  overpassDentistQuery,
   parseDailyTime,
   personalizeTemplate,
   resendConfig,
@@ -304,8 +306,8 @@ test("marketing email sends through Resend with domain sender and list unsubscri
 
 test("lead commands understand SF and outreach template personalizes clinic names", () => {
   assert.deepEqual(leadLocationFromCommand("fetch sf dental clinics"), {
-    bbox: [37.70, -122.52, 37.83, -122.35],
-    label: "San Francisco, CA",
+    bbox: [37.62, -122.56, 37.91, -122.22],
+    label: "San Francisco area, CA",
   });
   assert.equal(leadLocationFromCommand("fetch paris dental clinics"), null);
 
@@ -320,6 +322,21 @@ test("lead commands understand SF and outreach template personalizes clinic name
     }),
     /Marina Dental/
   );
+});
+
+test("lead fetch helpers cover broader dentist data and normalize emails", () => {
+  assert.equal(normalizeEmail("mailto:Info@Clinic.com?subject=Hello"), "info@clinic.com");
+  assert.equal(normalizeEmail("not-an-email"), null);
+
+  const query = overpassDentistQuery({
+    bbox: [37.62, -122.56, 37.91, -122.22],
+    maxLeads: 120,
+  });
+
+  assert.match(query, /node\["amenity"="dentist"\]/);
+  assert.match(query, /way\["healthcare"="dentist"\]/);
+  assert.match(query, /healthcare:speciality/);
+  assert.match(query, /out center tags 120/);
 });
 
 test("daily campaign config is explicit and limited", () => {

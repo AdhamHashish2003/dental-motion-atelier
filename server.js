@@ -1133,12 +1133,12 @@ function startDailyCampaignScheduler() {
 
 const leadLocations = {
   sf: {
-    bbox: [37.70, -122.52, 37.83, -122.35],
-    label: "San Francisco, CA",
+    bbox: [37.62, -122.56, 37.91, -122.22],
+    label: "San Francisco area, CA",
   },
   "san francisco": {
-    bbox: [37.70, -122.52, 37.83, -122.35],
-    label: "San Francisco, CA",
+    bbox: [37.62, -122.56, 37.91, -122.22],
+    label: "San Francisco area, CA",
   },
 };
 
@@ -1167,6 +1167,19 @@ function normalizeWebsite(value) {
   return `https://${raw.replace(/^\/+/, "")}`;
 }
 
+function normalizeEmail(value) {
+  const email = clean(value)
+    .replace(/^mailto:/i, "")
+    .split("?")[0]
+    .toLowerCase();
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return null;
+  }
+
+  return email;
+}
+
 function addressFromTags(tags = {}) {
   const parts = [
     [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" "),
@@ -1184,12 +1197,12 @@ function leadFromOsmElement(element) {
   const website = normalizeWebsite(
     tags.website || tags["contact:website"] || tags.url || tags["contact:url"]
   );
-  const email = clean(tags.email || tags["contact:email"]).toLowerCase();
+  const email = normalizeEmail(tags.email || tags["contact:email"]);
 
   return {
     address: addressFromTags(tags) || null,
     clinic: name,
-    email: email || null,
+    email,
     phone: clean(tags.phone || tags["contact:phone"]) || null,
     source_url: `https://www.openstreetmap.org/${element.type}/${element.id}`,
     website,
@@ -1216,14 +1229,25 @@ function uniqueLeads(leads) {
 
 function extractEmails(text) {
   const emails = new Set();
-  const source = String(text || "").replace(/%40/g, "@");
+  const source = String(text || "")
+    .replace(/%40/g, "@")
+    .replace(/\s*\[\s*at\s*\]\s*/gi, "@")
+    .replace(/\s*\(\s*at\s*\)\s*/gi, "@")
+    .replace(/\s+at\s+/gi, "@")
+    .replace(/\s*\[\s*dot\s*\]\s*/gi, ".")
+    .replace(/\s*\(\s*dot\s*\)\s*/gi, ".")
+    .replace(/\s+dot\s+/gi, ".");
   const matches = source.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
 
   for (const match of matches) {
-    const email = match.toLowerCase();
+    const email = normalizeEmail(match);
     if (
+      email &&
       !email.includes("example.") &&
       !email.includes("sentry.") &&
+      !email.includes("schema.org") &&
+      !email.includes("wixpress.com") &&
+      !email.includes("wordpress.com") &&
       !email.match(/\.(png|jpg|jpeg|gif|webp|svg)$/)
     ) {
       emails.add(email);
@@ -1233,7 +1257,7 @@ function extractEmails(text) {
   return [...emails];
 }
 
-async function fetchTextWithTimeout(url, timeoutMs = 8000) {
+async function fetchTextWithTimeout(url, timeoutMs = 5000) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -1271,21 +1295,73 @@ async function findWebsiteEmail(website) {
   let urls;
 
   try {
-    urls = [base, new URL("/contact", base).toString(), new URL("/contact-us", base).toString()];
+    urls = [
+      base,
+      new URL("/contact", base).toString(),
+      new URL("/contact-us", base).toString(),
+      new URL("/about", base).toString(),
+      new URL("/about-us", base).toString(),
+      new URL("/appointments", base).toString(),
+      new URL("/request-appointment", base).toString(),
+      new URL("/new-patients", base).toString(),
+      new URL("/patient-info", base).toString(),
+      new URL("/locations", base).toString(),
+    ];
   } catch {
     return null;
   }
 
-  for (const url of urls) {
-    const html = await fetchTextWithTimeout(url);
-    const [email] = extractEmails(html);
+  const pages = await Promise.all(urls.map((url) => fetchTextWithTimeout(url)));
 
+  for (const html of pages) {
+    const [email] = extractEmails(html);
     if (email) {
       return email;
     }
   }
 
   return null;
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  const workers = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const currentIndex = nextIndex;
+      nextIndex += 1;
+      results[currentIndex] = await worker(items[currentIndex], currentIndex);
+    }
+  });
+
+  await Promise.all(workers);
+  return results;
+}
+
+function overpassDentistQuery({ bbox, maxLeads }) {
+  const [south, west, north, east] = bbox;
+
+  return `[out:json][timeout:40];(
+    node["amenity"="dentist"](${south},${west},${north},${east});
+    way["amenity"="dentist"](${south},${west},${north},${east});
+    relation["amenity"="dentist"](${south},${west},${north},${east});
+    node["healthcare"="dentist"](${south},${west},${north},${east});
+    way["healthcare"="dentist"](${south},${west},${north},${east});
+    relation["healthcare"="dentist"](${south},${west},${north},${east});
+    node["healthcare:speciality"~"dentistry|orthodontics|oral_surgery",i](${south},${west},${north},${east});
+    way["healthcare:speciality"~"dentistry|orthodontics|oral_surgery",i](${south},${west},${north},${east});
+    relation["healthcare:speciality"~"dentistry|orthodontics|oral_surgery",i](${south},${west},${north},${east});
+  );out center tags ${maxLeads};`;
+}
+
+function leadScore(lead) {
+  let score = 0;
+  if (lead.email) score += 100;
+  if (lead.website) score += 30;
+  if (lead.phone) score += 10;
+  if (lead.address) score += 10;
+  if (!/^dent(al|ist) (clinic|office)$/i.test(lead.clinic)) score += 5;
+  return score;
 }
 
 async function fetchDentalClinicLeads(command, queryable = getDatabasePool()) {
@@ -1300,10 +1376,10 @@ async function fetchDentalClinicLeads(command, queryable = getDatabasePool()) {
 
   await ensureMarketingTables(queryable);
 
-  const maxLeads = boundedPositiveInteger(process.env.LEAD_FETCH_LIMIT, 40, 100);
-  const websiteScanLimit = boundedPositiveInteger(process.env.LEAD_FETCH_WEBSITE_SCAN_LIMIT, 25, 50);
-  const [south, west, north, east] = location.bbox;
-  const overpassQuery = `[out:json][timeout:25];node["amenity"="dentist"](${south},${west},${north},${east});out tags ${maxLeads};`;
+  const maxLeads = boundedPositiveInteger(process.env.LEAD_FETCH_LIMIT, 120, 250);
+  const websiteScanLimit = boundedPositiveInteger(process.env.LEAD_FETCH_WEBSITE_SCAN_LIMIT, 80, 150);
+  const websiteScanConcurrency = boundedPositiveInteger(process.env.LEAD_FETCH_CONCURRENCY, 6, 12);
+  const overpassQuery = overpassDentistQuery({ bbox: location.bbox, maxLeads });
   const overpassUrl = `https://overpass-api.de/api/interpreter?data=${encodeURIComponent(overpassQuery)}`;
   const response = await fetch(overpassUrl, {
     headers: {
@@ -1316,15 +1392,18 @@ async function fetchDentalClinicLeads(command, queryable = getDatabasePool()) {
   }
 
   const data = await response.json();
-  const leads = uniqueLeads((data.elements || []).map(leadFromOsmElement)).slice(0, maxLeads);
+  const leads = uniqueLeads((data.elements || []).map(leadFromOsmElement))
+    .sort((a, b) => leadScore(b) - leadScore(a))
+    .slice(0, maxLeads);
   let scannedWebsites = 0;
+  const scanTargets = leads
+    .filter((lead) => !lead.email && lead.website)
+    .slice(0, websiteScanLimit);
 
-  for (const lead of leads) {
-    if (!lead.email && lead.website && scannedWebsites < websiteScanLimit) {
-      scannedWebsites += 1;
-      lead.email = await findWebsiteEmail(lead.website);
-    }
-  }
+  await mapWithConcurrency(scanTargets, websiteScanConcurrency, async (lead) => {
+    scannedWebsites += 1;
+    lead.email = await findWebsiteEmail(lead.website);
+  });
 
   const withEmail = leads.filter((lead) => lead.email);
   const withoutEmail = leads.filter((lead) => !lead.email);
@@ -1358,6 +1437,7 @@ async function fetchDentalClinicLeads(command, queryable = getDatabasePool()) {
     imported: imported.imported || 0,
     skipped_without_email: withoutEmail.length,
     scanned_websites: scannedWebsites,
+    source_records: data.elements?.length || 0,
     samples: withEmail.slice(0, 10).map((lead) => ({
       clinic: lead.clinic,
       email: lead.email,
@@ -2000,6 +2080,8 @@ module.exports = {
   leadLocationFromCommand,
   localDateTimeParts,
   marketingSubscribersOverview,
+  normalizeEmail,
+  overpassDentistQuery,
   parseDailyTime,
   personalizeTemplate,
   requireMarketingAdmin,
