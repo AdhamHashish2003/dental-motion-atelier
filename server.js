@@ -1241,20 +1241,39 @@ function extractEmails(text) {
 
   for (const match of matches) {
     const email = normalizeEmail(match);
-    if (
-      email &&
-      !email.includes("example.") &&
-      !email.includes("sentry.") &&
-      !email.includes("schema.org") &&
-      !email.includes("wixpress.com") &&
-      !email.includes("wordpress.com") &&
-      !email.match(/\.(png|jpg|jpeg|gif|webp|svg)$/)
-    ) {
+    if (isUsableLeadEmail(email)) {
       emails.add(email);
     }
   }
 
   return [...emails];
+}
+
+function isUsableLeadEmail(email) {
+  if (!email) {
+    return false;
+  }
+
+  const [localPart, domain] = email.split("@");
+  const blockedDomains = new Set([
+    "domain.com",
+    "example.com",
+    "example.org",
+    "example.net",
+    "yourdomain.com",
+    "sentry.io",
+    "schema.org",
+    "wixpress.com",
+    "wordpress.com",
+  ]);
+  const blockedLocals = new Set(["user", "username", "name", "yourname", "test", "email"]);
+
+  return (
+    !blockedDomains.has(domain) &&
+    !blockedLocals.has(localPart) &&
+    !email.includes("example.") &&
+    !email.match(/\.(png|jpg|jpeg|gif|webp|svg)$/)
+  );
 }
 
 async function fetchTextWithTimeout(url, timeoutMs = 5000) {
@@ -1351,7 +1370,7 @@ function overpassDentistQuery({ bbox, maxLeads }) {
     node["healthcare:speciality"~"dentistry|orthodontics|oral_surgery",i](${south},${west},${north},${east});
     way["healthcare:speciality"~"dentistry|orthodontics|oral_surgery",i](${south},${west},${north},${east});
     relation["healthcare:speciality"~"dentistry|orthodontics|oral_surgery",i](${south},${west},${north},${east});
-  );out center tags ${maxLeads};`;
+  );out center tags;`;
 }
 
 function leadScore(lead) {

@@ -336,7 +336,7 @@ test("lead fetch helpers cover broader dentist data and normalize emails", () =>
   assert.match(query, /node\["amenity"="dentist"\]/);
   assert.match(query, /way\["healthcare"="dentist"\]/);
   assert.match(query, /healthcare:speciality/);
-  assert.match(query, /out center tags 120/);
+  assert.match(query, /out center tags/);
 });
 
 test("daily campaign config is explicit and limited", () => {
