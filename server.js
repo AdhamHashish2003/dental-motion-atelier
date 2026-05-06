@@ -529,6 +529,25 @@ async function ensureMarketingTables(queryable) {
     )
   `);
 
+  await queryable.query(`
+    CREATE TABLE IF NOT EXISTS clinic_research_leads (
+      id BIGSERIAL PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      source_key TEXT NOT NULL UNIQUE,
+      location TEXT NOT NULL,
+      clinic TEXT NOT NULL,
+      email TEXT,
+      website TEXT,
+      phone TEXT,
+      address TEXT,
+      source_url TEXT,
+      has_email BOOLEAN NOT NULL DEFAULT FALSE,
+      raw JSONB NOT NULL DEFAULT '{}'::jsonb
+    )
+  `);
+
   marketingTablesReady = true;
 }
 
@@ -635,6 +654,24 @@ async function marketingSubscriberStats(queryable = getDatabasePool()) {
   return { saved: true, ...result.rows[0] };
 }
 
+async function clinicResearchStats(queryable = getDatabasePool()) {
+  if (!queryable) {
+    return { saved: false, reason: "DATABASE_NOT_CONFIGURED" };
+  }
+
+  await ensureMarketingTables(queryable);
+
+  const result = await queryable.query(`
+    SELECT
+      COUNT(*)::int AS researched_total,
+      COUNT(*) FILTER (WHERE has_email)::int AS researched_with_email,
+      COUNT(*) FILTER (WHERE NOT has_email)::int AS researched_without_email
+    FROM clinic_research_leads
+  `);
+
+  return { saved: true, ...result.rows[0] };
+}
+
 async function marketingSubscribersOverview(queryable = getDatabasePool()) {
   if (!queryable) {
     return { saved: false, reason: "DATABASE_NOT_CONFIGURED" };
@@ -651,7 +688,18 @@ async function marketingSubscribersOverview(queryable = getDatabasePool()) {
     LIMIT 50
   `);
 
-  return { saved: true, stats, recent: recent.rows };
+  const research = await clinicResearchStats(queryable);
+
+  return {
+    saved: true,
+    stats: {
+      ...stats,
+      researched_total: research.researched_total || 0,
+      researched_with_email: research.researched_with_email || 0,
+      researched_without_email: research.researched_without_email || 0,
+    },
+    recent: recent.rows,
+  };
 }
 
 async function createMarketingCampaign(payload, queryable = getDatabasePool()) {
@@ -749,6 +797,54 @@ function personalizeTemplate(value, subscriber) {
     .replaceAll("{{clinic}}", clinic)
     .replaceAll("{{name}}", name)
     .replaceAll("{{email}}", subscriber.email || "");
+}
+
+function parseUrlList(value) {
+  return String(value || "")
+    .split(/[\n,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .filter((item) => /^https?:\/\//i.test(item))
+    .slice(0, 6);
+}
+
+function outreachShowcaseConfig(options = {}) {
+  const websiteUrl = normalizeWebsite(
+    options.website_url ||
+      options.websiteUrl ||
+      process.env.EMAIL_SHOWCASE_URL ||
+      publicSiteUrl()
+  );
+  const videoUrls = parseUrlList(
+    options.video_urls ||
+      options.videoUrls ||
+      process.env.EMAIL_VIDEO_URLS ||
+      ""
+  );
+
+  return { websiteUrl, videoUrls };
+}
+
+function videoLinksHtml(videoUrls) {
+  if (!videoUrls.length) {
+    return "";
+  }
+
+  const links = videoUrls
+    .map((url, index) => `<li><a href="${escapeHtml(url)}">Dental motion video example ${index + 1}</a></li>`)
+    .join("");
+
+  return `<p>Here are a few examples:</p><ul>${links}</ul>`;
+}
+
+function videoLinksText(videoUrls) {
+  if (!videoUrls.length) {
+    return "";
+  }
+
+  return `\n\nVideo examples:\n${videoUrls
+    .map((url, index) => `${index + 1}. ${url}`)
+    .join("\n")}`;
 }
 
 async function sendMarketingEmail(campaign, subscriber, fetchImpl = fetch) {
@@ -1227,6 +1323,18 @@ function uniqueLeads(leads) {
   return unique;
 }
 
+function clinicLeadSourceKey(lead) {
+  return [
+    lead.source_url || "",
+    lead.website || "",
+    lead.email || "",
+    lead.clinic || "",
+    lead.address || "",
+  ]
+    .join("|")
+    .toLowerCase();
+}
+
 function extractEmails(text) {
   const emails = new Set();
   const source = String(text || "")
@@ -1357,6 +1465,79 @@ async function mapWithConcurrency(items, concurrency, worker) {
   return results;
 }
 
+async function saveClinicResearchLeads(leads, locationLabel, queryable = getDatabasePool()) {
+  if (!queryable) {
+    return { saved: false, reason: "DATABASE_NOT_CONFIGURED" };
+  }
+
+  await ensureMarketingTables(queryable);
+
+  let saved = 0;
+  let withEmail = 0;
+  let withoutEmail = 0;
+
+  for (const lead of leads) {
+    const sourceKey = clinicLeadSourceKey(lead);
+    if (!sourceKey.trim()) {
+      continue;
+    }
+
+    const hasEmail = Boolean(lead.email);
+    if (hasEmail) {
+      withEmail += 1;
+    } else {
+      withoutEmail += 1;
+    }
+
+    await queryable.query(
+      `
+        INSERT INTO clinic_research_leads (
+          source_key,
+          location,
+          clinic,
+          email,
+          website,
+          phone,
+          address,
+          source_url,
+          has_email,
+          raw,
+          updated_at,
+          last_seen_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, NOW(), NOW())
+        ON CONFLICT (source_key) DO UPDATE
+        SET location = EXCLUDED.location,
+            clinic = EXCLUDED.clinic,
+            email = COALESCE(EXCLUDED.email, clinic_research_leads.email),
+            website = COALESCE(EXCLUDED.website, clinic_research_leads.website),
+            phone = COALESCE(EXCLUDED.phone, clinic_research_leads.phone),
+            address = COALESCE(EXCLUDED.address, clinic_research_leads.address),
+            source_url = COALESCE(EXCLUDED.source_url, clinic_research_leads.source_url),
+            has_email = EXCLUDED.has_email OR clinic_research_leads.has_email,
+            raw = EXCLUDED.raw,
+            updated_at = NOW(),
+            last_seen_at = NOW()
+      `,
+      [
+        sourceKey,
+        locationLabel,
+        lead.clinic || "Dental clinic",
+        lead.email || null,
+        lead.website || null,
+        lead.phone || null,
+        lead.address || null,
+        lead.source_url || null,
+        hasEmail,
+        JSON.stringify(lead),
+      ]
+    );
+    saved += 1;
+  }
+
+  return { saved: true, raw_saved: saved, raw_with_email: withEmail, raw_without_email: withoutEmail };
+}
+
 function overpassDentistQuery({ bbox, maxLeads }) {
   const [south, west, north, east] = bbox;
 
@@ -1424,6 +1605,7 @@ async function fetchDentalClinicLeads(command, queryable = getDatabasePool()) {
     lead.email = await findWebsiteEmail(lead.website);
   });
 
+  const rawSaved = await saveClinicResearchLeads(leads, location.label, queryable);
   const withEmail = leads.filter((lead) => lead.email);
   const withoutEmail = leads.filter((lead) => !lead.email);
   let imported = { imported: 0, active: 0, unsubscribed: 0 };
@@ -1454,6 +1636,9 @@ async function fetchDentalClinicLeads(command, queryable = getDatabasePool()) {
     location: location.label,
     found: leads.length,
     imported: imported.imported || 0,
+    raw_saved: rawSaved.raw_saved || 0,
+    raw_with_email: rawSaved.raw_with_email || 0,
+    raw_without_email: rawSaved.raw_without_email || 0,
     skipped_without_email: withoutEmail.length,
     scanned_websites: scannedWebsites,
     source_records: data.elements?.length || 0,
@@ -1466,12 +1651,19 @@ async function fetchDentalClinicLeads(command, queryable = getDatabasePool()) {
   };
 }
 
-function defaultDentalOutreachCampaign(limit = 15) {
+function defaultDentalOutreachCampaign(limit = 15, options = {}) {
+  const showcase = outreachShowcaseConfig(options);
+  const safeWebsiteUrl = escapeHtml(showcase.websiteUrl);
+  const videosHtml = videoLinksHtml(showcase.videoUrls);
+  const videosText = videoLinksText(showcase.videoUrls);
+
   return {
     html: `
       <p>Hi {{clinic}},</p>
       <p>I make dental motion graphic videos for clinics: short, colorful animations that explain treatments like implants, veneers, aligners, whitening, and smile transformations.</p>
-      <p>If you want, I can send a few examples and a simple quote for a custom video for your clinic.</p>
+      <p>You can see the website here: <a href="${safeWebsiteUrl}">${safeWebsiteUrl}</a></p>
+      ${videosHtml || "<p>I can also send short video examples if you want to see the style.</p>"}
+      <p>If you want, I can send a simple quote for a custom video for your clinic.</p>
       <p>Reply here and I will send details.</p>
       <p>Best,<br>Dental Motion</p>
     `,
@@ -1481,11 +1673,16 @@ function defaultDentalOutreachCampaign(limit = 15) {
     send: false,
     subject: "Dental motion graphic video for {{clinic}}",
     text:
-      "Hi {{clinic}},\n\nI make dental motion graphic videos for clinics: short, colorful animations that explain treatments like implants, veneers, aligners, whitening, and smile transformations.\n\nIf you want, I can send a few examples and a simple quote for a custom video for your clinic.\n\nReply here and I will send details.\n\nBest,\nDental Motion",
+      `Hi {{clinic}},\n\nI make dental motion graphic videos for clinics: short, colorful animations that explain treatments like implants, veneers, aligners, whitening, and smile transformations.\n\nWebsite: ${showcase.websiteUrl}${videosText}\n\nIf you want, I can send a simple quote for a custom video for your clinic.\n\nReply here and I will send details.\n\nBest,\nDental Motion`,
   };
 }
 
-async function sendNextLeadBatch(limit = 15, queryable = getDatabasePool()) {
+async function sendNextLeadBatch(limit = 15, options = {}, queryable = getDatabasePool()) {
+  if (options && typeof options.query === "function") {
+    queryable = options;
+    options = {};
+  }
+
   if (!queryable) {
     return { saved: false, reason: "DATABASE_NOT_CONFIGURED" };
   }
@@ -1493,7 +1690,7 @@ async function sendNextLeadBatch(limit = 15, queryable = getDatabasePool()) {
   await ensureMarketingTables(queryable);
 
   const batchLimit = boundedPositiveInteger(limit, 15, 50);
-  const campaign = await createMarketingCampaign(defaultDentalOutreachCampaign(batchLimit), queryable);
+  const campaign = await createMarketingCampaign(defaultDentalOutreachCampaign(batchLimit, options), queryable);
 
   if (!campaign.saved || campaign.queued === 0) {
     const overview = await marketingSubscribersOverview(queryable);
@@ -1874,7 +2071,7 @@ async function handleAdminLeadSend(request, response) {
   }
 
   try {
-    const result = await sendNextLeadBatch(payload.limit || 15);
+    const result = await sendNextLeadBatch(payload.limit || 15, payload);
 
     if (!result.saved) {
       sendJson(response, 503, { ok: false, message: "Database is not connected yet." });
@@ -1927,7 +2124,7 @@ async function handleAdminCommand(request, response) {
     const limit = match ? Number(match[1]) : 15;
 
     try {
-      const result = await sendNextLeadBatch(limit);
+      const result = await sendNextLeadBatch(limit, payload);
       if (!result.saved) {
         sendJson(response, 503, { ok: false, message: "Database is not connected yet." });
         return;
@@ -2090,6 +2287,7 @@ module.exports = {
   campaignEmailContent,
   createMarketingCampaign,
   contactEmailContent,
+  clinicResearchStats,
   dailyCampaignConfig,
   databaseConfig,
   defaultDentalOutreachCampaign,
@@ -2101,7 +2299,9 @@ module.exports = {
   marketingSubscribersOverview,
   normalizeEmail,
   overpassDentistQuery,
+  outreachShowcaseConfig,
   parseDailyTime,
+  parseUrlList,
   personalizeTemplate,
   requireMarketingAdmin,
   runDailyMarketingCampaign,
@@ -2112,6 +2312,7 @@ module.exports = {
   sendMarketingEmail,
   startDailyCampaignScheduler,
   saveContactSubmission,
+  saveClinicResearchLeads,
   smtpConfig,
   unsubscribeMarketingSubscriber,
   updateContactEmailStatus,

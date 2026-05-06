@@ -86,9 +86,15 @@ stats
 ```
 
 `fetch sf dental clinics` uses OpenStreetMap public business data and clinic
-websites to find public email addresses. `send 15` sends the ready Dental Motion
-outreach template to the next 15 unsent leads, then marks those leads as sent so
-they disappear from the pending queue.
+websites to find public email addresses. The backend saves every researched
+clinic in `clinic_research_leads`, even when no public email is found, and saves
+email-ready contacts separately in `email_subscribers`. `send 15` sends the
+ready Dental Motion outreach template to the next 15 unsent email leads, then
+marks those leads as sent so they disappear from the pending queue.
+
+Before sending, paste video URLs into the dashboard. Email clients usually do
+not play embedded video, so the template links to `https://dentalmotiongraphic.com`
+and the video examples.
 
 Required Railway variables:
 
@@ -226,4 +232,8 @@ ORDER BY created_at DESC;
 SELECT campaign_id, run_date, status, attempted, sent_count, failed_count, remaining
 FROM email_daily_runs
 ORDER BY run_date DESC;
+
+SELECT clinic, email, website, phone, address, has_email
+FROM clinic_research_leads
+ORDER BY last_seen_at DESC;
 ```

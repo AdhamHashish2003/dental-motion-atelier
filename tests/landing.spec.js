@@ -53,6 +53,9 @@ test("form and play interactions are wired", () => {
 test("admin dashboard is wired to protected lead commands", () => {
   assert.ok(adminHtml.includes("Dental Motion outreach"));
   assert.ok(adminHtml.includes("fetch sf dental clinics"));
+  assert.ok(adminHtml.includes("Video example links"));
+  assert.ok(adminScript.includes("dentalMotionVideoUrls"));
+  assert.ok(adminScript.includes("researched_total"));
   assert.ok(adminScript.includes("/api/admin/command"));
   assert.ok(adminScript.includes("/api/admin/leads/fetch"));
   assert.ok(adminScript.includes("/api/admin/leads/send-15"));

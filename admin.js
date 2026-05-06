@@ -6,13 +6,18 @@ const runCommandButton = document.querySelector("#runCommandButton");
 const fetchButton = document.querySelector("#fetchButton");
 const sendButton = document.querySelector("#sendButton");
 const statsButton = document.querySelector("#statsButton");
+const websiteInput = document.querySelector("#websiteInput");
+const videoInput = document.querySelector("#videoInput");
 const output = document.querySelector("#output");
 const leadList = document.querySelector("#leadList");
+const researchedMetric = document.querySelector("#researchedMetric");
 const totalMetric = document.querySelector("#totalMetric");
 const pendingMetric = document.querySelector("#pendingMetric");
 const sentMetric = document.querySelector("#sentMetric");
 
 const tokenKey = "dentalMotionAdminToken";
+const websiteKey = "dentalMotionShowcaseUrl";
+const videosKey = "dentalMotionVideoUrls";
 
 function token() {
   return localStorage.getItem(tokenKey) || "";
@@ -29,9 +34,20 @@ function show(value) {
 }
 
 function renderStats(stats = {}) {
+  researchedMetric.textContent = stats.researched_total ?? "-";
   totalMetric.textContent = stats.total ?? "-";
   pendingMetric.textContent = stats.pending_unsent ?? "-";
   sentMetric.textContent = stats.already_sent ?? "-";
+}
+
+function showcasePayload() {
+  localStorage.setItem(websiteKey, websiteInput.value.trim());
+  localStorage.setItem(videosKey, videoInput.value.trim());
+
+  return {
+    video_urls: videoInput.value.trim(),
+    website_url: websiteInput.value.trim() || "https://dentalmotiongraphic.com",
+  };
 }
 
 function renderLeads(leads = []) {
@@ -144,7 +160,7 @@ runCommandButton.addEventListener("click", () => {
   run(`Running ${command}`, () =>
     adminRequest("/api/admin/command", {
       method: "POST",
-      body: JSON.stringify({ command }),
+      body: JSON.stringify({ command, ...showcasePayload() }),
     })
   );
 });
@@ -164,7 +180,7 @@ sendButton.addEventListener("click", () => {
   run("Sending next 15", () =>
     adminRequest("/api/admin/leads/send-15", {
       method: "POST",
-      body: JSON.stringify({ limit: 15 }),
+      body: JSON.stringify({ limit: 15, ...showcasePayload() }),
     })
   );
 });
@@ -172,6 +188,9 @@ sendButton.addEventListener("click", () => {
 statsButton.addEventListener("click", () => {
   run("Loading stats", refreshStats);
 });
+
+websiteInput.value = localStorage.getItem(websiteKey) || websiteInput.value;
+videoInput.value = localStorage.getItem(videosKey) || "";
 
 if (token()) {
   run("Loading stats", refreshStats);

@@ -10,13 +10,16 @@ const {
   leadLocationFromCommand,
   localDateTimeParts,
   normalizeEmail,
+  outreachShowcaseConfig,
   overpassDentistQuery,
   parseDailyTime,
+  parseUrlList,
   personalizeTemplate,
   resendConfig,
   requireMarketingAdmin,
   sendMarketingEmail,
   saveContactSubmission,
+  saveClinicResearchLeads,
   updateContactEmailStatus,
   validateCampaignPayload,
   validateMarketingSubscriber,
@@ -322,6 +325,59 @@ test("lead commands understand SF and outreach template personalizes clinic name
     }),
     /Marina Dental/
   );
+});
+
+test("outreach template includes website and video example links", () => {
+  const campaign = defaultDentalOutreachCampaign(15, {
+    video_urls: "https://example.com/video-one\nnot-a-url\nhttps://example.com/video-two",
+    website_url: "https://dentalmotiongraphic.com",
+  });
+
+  assert.match(campaign.html, /https:\/\/dentalmotiongraphic\.com/);
+  assert.match(campaign.html, /Dental motion video example 1/);
+  assert.match(campaign.html, /https:\/\/example\.com\/video-two/);
+  assert.match(campaign.text, /Video examples/);
+
+  assert.deepEqual(parseUrlList("https://one.test, nope\nhttps://two.test"), [
+    "https://one.test",
+    "https://two.test",
+  ]);
+  assert.deepEqual(outreachShowcaseConfig({ website_url: "dentalmotiongraphic.com" }).videoUrls, []);
+});
+
+test("raw clinic research leads are saved separately from email subscribers", async () => {
+  const calls = [];
+  const fakeDatabase = {
+    async query(sql, params = []) {
+      calls.push({ params, sql });
+      return { rows: [], rowCount: 1 };
+    },
+  };
+
+  const result = await saveClinicResearchLeads(
+    [
+      {
+        address: "1 Market St",
+        clinic: "Market Dental",
+        email: "hello@marketdental.test",
+        phone: "555-0000",
+        source_url: "https://www.openstreetmap.org/node/1",
+        website: "https://marketdental.test",
+      },
+      {
+        clinic: "No Email Dental",
+        source_url: "https://www.openstreetmap.org/node/2",
+      },
+    ],
+    "San Francisco area, CA",
+    fakeDatabase
+  );
+
+  assert.equal(result.raw_saved, 2);
+  assert.equal(result.raw_with_email, 1);
+  assert.equal(result.raw_without_email, 1);
+  assert.ok(calls.some((call) => call.sql.includes("CREATE TABLE IF NOT EXISTS clinic_research_leads")));
+  assert.ok(calls.some((call) => call.sql.includes("INSERT INTO clinic_research_leads")));
 });
 
 test("lead fetch helpers cover broader dentist data and normalize emails", () => {

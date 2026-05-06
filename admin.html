@@ -44,9 +44,34 @@
         </p>
       </section>
 
+      <section class="card showcase-card">
+        <p class="eyebrow">Email showcase</p>
+        <div class="showcase-grid">
+          <label>
+            <span>Website link shown in email</span>
+            <input id="websiteInput" type="url" value="https://dentalmotiongraphic.com" />
+          </label>
+          <label>
+            <span>Video example links</span>
+            <textarea
+              id="videoInput"
+              rows="4"
+              placeholder="Paste one video URL per line when you have them"
+            ></textarea>
+          </label>
+        </div>
+        <p class="hint">
+          Most inboxes do not play embedded videos, so the email links to your website and video examples.
+        </p>
+      </section>
+
       <section class="grid">
         <article class="metric">
-          <span>Total leads</span>
+          <span>Researched clinics</span>
+          <strong id="researchedMetric">-</strong>
+        </article>
+        <article class="metric">
+          <span>Email leads</span>
           <strong id="totalMetric">-</strong>
         </article>
         <article class="metric">
