@@ -269,6 +269,7 @@ test("campaign email content includes unsubscribe compliance footer", () => {
 test("marketing email sends through Resend with domain sender and list unsubscribe", async () => {
   process.env.RESEND_KEY = "re_test_key";
   process.env.EMAIL_CAMPAIGN_FROM_EMAIL = "Dental Motion <team@dentalmotiongraphic.com>";
+  process.env.CONTACT_TO_EMAIL = "team@dentalmotiongraphic.com";
   process.env.PUBLIC_SITE_URL = "https://dentalmotiongraphic.com";
 
   let capturedRequest;
@@ -301,10 +302,12 @@ test("marketing email sends through Resend with domain sender and list unsubscri
   assert.equal(capturedRequest.request.headers.Authorization, "Bearer re_test_key");
   assert.equal(body.from, "Dental Motion <team@dentalmotiongraphic.com>");
   assert.deepEqual(body.to, ["owner@example.com"]);
+  assert.deepEqual(body.bcc, ["team@dentalmotiongraphic.com"]);
   assert.match(body.headers["List-Unsubscribe"], /\/unsubscribe\?token=abc123/);
 
   delete process.env.RESEND_KEY;
   delete process.env.EMAIL_CAMPAIGN_FROM_EMAIL;
+  delete process.env.CONTACT_TO_EMAIL;
   delete process.env.PUBLIC_SITE_URL;
 });
 
@@ -352,6 +355,46 @@ test("marketing email attaches the local demo video through Resend", async () =>
 
   delete process.env.RESEND_KEY;
   delete process.env.EMAIL_CAMPAIGN_FROM_EMAIL;
+  delete process.env.PUBLIC_SITE_URL;
+});
+
+test("marketing email does not bcc the archive address when testing to itself", async () => {
+  process.env.RESEND_KEY = "re_test_key";
+  process.env.EMAIL_CAMPAIGN_FROM_EMAIL = "Dental Motion <team@dentalmotiongraphic.com>";
+  process.env.EMAIL_CAMPAIGN_BCC_EMAIL = "team@dentalmotiongraphic.com";
+  process.env.PUBLIC_SITE_URL = "https://dentalmotiongraphic.com";
+
+  let capturedRequest;
+  await sendMarketingEmail(
+    {
+      subject: "Dental video offer",
+      html: "<p>Hello doctor.</p>",
+      text: "Hello doctor.",
+    },
+    {
+      email: "team@dentalmotiongraphic.com",
+      unsubscribe_token: "abc123",
+    },
+    async (url, request) => {
+      capturedRequest = { url, request };
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ id: "email_789" });
+        },
+      };
+    }
+  );
+
+  const body = JSON.parse(capturedRequest.request.body);
+
+  assert.deepEqual(body.to, ["team@dentalmotiongraphic.com"]);
+  assert.deepEqual(body.bcc, []);
+
+  delete process.env.RESEND_KEY;
+  delete process.env.EMAIL_CAMPAIGN_FROM_EMAIL;
+  delete process.env.EMAIL_CAMPAIGN_BCC_EMAIL;
   delete process.env.PUBLIC_SITE_URL;
 });
 

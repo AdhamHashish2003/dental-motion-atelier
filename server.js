@@ -432,6 +432,21 @@ function campaignFooterAddress() {
   return process.env.EMAIL_FOOTER_ADDRESS || "Dental Motion, dentalmotiongraphic.com";
 }
 
+function parseEmailList(value) {
+  return String(value || "")
+    .split(/[\n,]+/)
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(item))
+    .slice(0, 10);
+}
+
+function campaignBccEmails(subscriberEmail = "") {
+  const configured = process.env.EMAIL_CAMPAIGN_BCC_EMAIL || contactRecipient;
+  const subscriber = String(subscriberEmail || "").trim().toLowerCase();
+
+  return parseEmailList(configured).filter((email) => email !== subscriber);
+}
+
 function stripHtml(html) {
   return String(html || "")
     .replace(/<style[\s\S]*?<\/style>/gi, " ")
@@ -946,6 +961,7 @@ async function sendMarketingEmail(campaign, subscriber, fetchImpl = fetch) {
   const content = campaignEmailContent(campaign, subscriber);
   const attachments = resendAttachmentPayload(campaign.attachments);
   const emailPayload = {
+    bcc: campaignBccEmails(subscriber.email),
     from: config.fromEmail,
     to: [subscriber.email],
     reply_to: contactRecipient,

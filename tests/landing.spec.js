@@ -56,6 +56,7 @@ test("admin dashboard is wired to protected lead commands", () => {
   assert.ok(adminHtml.includes("Video example links"));
   assert.ok(adminHtml.includes("Send test email"));
   assert.ok(adminHtml.includes("Allow resending"));
+  assert.ok(adminHtml.includes("Resend API emails do not show in Gmail Sent"));
   assert.ok(adminHtml.includes("dental-motion-demo-1.mp4"));
   assert.ok(adminScript.includes("dentalMotionVideoUrls"));
   assert.ok(adminScript.includes("dentalMotionAttachVideo"));
