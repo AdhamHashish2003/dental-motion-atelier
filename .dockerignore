@@ -1,0 +1,11 @@
+.DS_Store
+.git
+node_modules
+playwright-report
+test-results
+videos-extra
+verified-*.png
+preview.png
+luxury-preview.png
+short-colorful-preview.png
+short-colorful-mobile-preview.png
