@@ -440,6 +440,20 @@ function parseEmailList(value) {
     .slice(0, 10);
 }
 
+function blockedMarketingEmails() {
+  return [
+    "your@email.com",
+    "email@example.com",
+    "hello@example.com",
+    "test@example.com",
+    ...parseEmailList(process.env.EMAIL_CAMPAIGN_BLOCKLIST || ""),
+  ];
+}
+
+function isBlockedMarketingEmail(email) {
+  return blockedMarketingEmails().includes(String(email || "").trim().toLowerCase());
+}
+
 function campaignBccEmails(subscriberEmail = "") {
   const configured = process.env.EMAIL_CAMPAIGN_BCC_EMAIL || contactRecipient;
   const subscriber = String(subscriberEmail || "").trim().toLowerCase();
@@ -485,6 +499,10 @@ function validateMarketingSubscriber(raw, fallbackConsentNote = "") {
 
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 160) {
     return { error: "Each subscriber needs a valid email address." };
+  }
+
+  if (isBlockedMarketingEmail(email)) {
+    return { error: `Blocked placeholder or test email address: ${email}.` };
   }
 
   if (
@@ -743,7 +761,8 @@ async function marketingSubscriberStats(queryable = getDatabasePool()) {
       COUNT(*) FILTER (WHERE unsubscribed_at IS NULL AND last_sent_at IS NULL)::int AS pending_unsent,
       COUNT(*) FILTER (WHERE unsubscribed_at IS NULL AND last_sent_at IS NOT NULL)::int AS already_sent
     FROM email_subscribers
-  `);
+    WHERE NOT (LOWER(email) = ANY($1::text[]))
+  `, [blockedMarketingEmails()]);
 
   return { saved: true, ...result.rows[0] };
 }
@@ -778,9 +797,10 @@ async function marketingSubscribersOverview(queryable = getDatabasePool()) {
     SELECT email, name, clinic, website, phone, address, source, last_sent_at, created_at
     FROM email_subscribers
     WHERE unsubscribed_at IS NULL
+      AND NOT (LOWER(email) = ANY($1::text[]))
     ORDER BY COALESCE(last_sent_at, '1970-01-01'::timestamptz) ASC, created_at DESC
     LIMIT 50
-  `);
+  `, [blockedMarketingEmails()]);
 
   const research = await clinicResearchStats(queryable);
 
@@ -827,6 +847,7 @@ async function createMarketingCampaign(payload, queryable = getDatabasePool()) {
         FROM email_subscribers
         WHERE unsubscribed_at IS NULL
           AND ($3::boolean = false OR last_sent_at IS NULL)
+          AND NOT (LOWER(email) = ANY($4::text[]))
         ORDER BY created_at ASC
         LIMIT $2
       )
@@ -836,7 +857,7 @@ async function createMarketingCampaign(payload, queryable = getDatabasePool()) {
       ON CONFLICT (campaign_id, subscriber_id) DO NOTHING
       RETURNING id
     `,
-    [campaignId, campaign.limit, campaign.onlyUnsent]
+    [campaignId, campaign.limit, campaign.onlyUnsent, blockedMarketingEmails()]
   );
 
   const status = recipients.rowCount > 0 ? "queued" : "empty";
@@ -1474,6 +1495,7 @@ function isUsableLeadEmail(email) {
   const [localPart, domain] = email.split("@");
   const blockedDomains = new Set([
     "domain.com",
+    "email.com",
     "example.com",
     "example.org",
     "example.net",
@@ -1483,9 +1505,10 @@ function isUsableLeadEmail(email) {
     "wixpress.com",
     "wordpress.com",
   ]);
-  const blockedLocals = new Set(["user", "username", "name", "yourname", "test", "email"]);
+  const blockedLocals = new Set(["user", "username", "name", "your", "yourname", "test", "email"]);
 
   return (
+    !isBlockedMarketingEmail(email) &&
     !blockedDomains.has(domain) &&
     !blockedLocals.has(localPart) &&
     !email.includes("example.") &&

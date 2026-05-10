@@ -205,8 +205,14 @@ test("marketing subscribers must include consent evidence", () => {
     email: "owner@example.com",
     name: "Clinic Owner",
   });
+  const placeholder = validateMarketingSubscriber({
+    email: "your@email.com",
+    name: "Placeholder Dental",
+    consent_note: "Public business contact found while researching clinics.",
+  });
 
   assert.match(missingConsent.error, /consent_note/);
+  assert.match(placeholder.error, /Blocked placeholder/);
 
   const valid = validateMarketingSubscriber({
     email: "OWNER@EXAMPLE.COM",
