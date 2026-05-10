@@ -1,7 +1,7 @@
-const { createReadStream, existsSync, statSync } = require("node:fs");
+const { createReadStream, existsSync, readFileSync, readdirSync, statSync } = require("node:fs");
 const { createServer } = require("node:http");
 const { randomBytes, timingSafeEqual } = require("node:crypto");
-const { extname, join, normalize, relative, resolve } = require("node:path");
+const { basename, extname, join, normalize, relative, resolve } = require("node:path");
 const { setTimeout: delay } = require("node:timers/promises");
 const nodemailer = require("nodemailer");
 const { Pool } = require("pg");
@@ -19,8 +19,11 @@ const types = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
+  ".mov": "video/quicktime",
+  ".mp4": "video/mp4",
   ".png": "image/png",
   ".svg": "image/svg+xml",
+  ".webm": "video/webm",
   ".webp": "image/webp",
 };
 
@@ -269,6 +272,82 @@ function isDatabaseRequired() {
 
 function publicSiteUrl() {
   return (process.env.PUBLIC_SITE_URL || process.env.SITE_URL || "https://dentalmotiongraphic.com").replace(/\/+$/, "");
+}
+
+function booleanOption(value, fallback = false) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  return /^(1|true|yes|on)$/i.test(String(value).trim());
+}
+
+function publicVideoFiles() {
+  const videoDir = join(root, "videos");
+  const allowedExtensions = new Set([".mov", ".mp4", ".webm"]);
+
+  if (!existsSync(videoDir)) {
+    return [];
+  }
+
+  return readdirSync(videoDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && allowedExtensions.has(extname(entry.name).toLowerCase()))
+    .map((entry) => entry.name)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function defaultPublicVideoUrls() {
+  return publicVideoFiles()
+    .slice(0, 6)
+    .map((filename) => `${publicSiteUrl()}/videos/${encodeURIComponent(filename)}`);
+}
+
+function campaignVideoAttachments(options = {}) {
+  const shouldAttach = booleanOption(
+    options.attach_video ?? options.attachVideo ?? process.env.EMAIL_ATTACH_VIDEO,
+    false
+  );
+
+  if (!shouldAttach) {
+    return [];
+  }
+
+  return publicVideoFiles()
+    .slice(0, 1)
+    .map((filename) => ({
+      contentType: types[extname(filename).toLowerCase()] || "application/octet-stream",
+      filename,
+      path: join(root, "videos", filename),
+    }));
+}
+
+function resendAttachmentPayload(attachments = []) {
+  const videoDir = join(root, "videos");
+
+  return attachments
+    .map((attachment) => {
+      const filePath = resolve(String(attachment.path || ""));
+      const relativePath = relative(videoDir, filePath);
+
+      if (relativePath.startsWith("..") || relativePath.includes(":")) {
+        return null;
+      }
+
+      if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+        return null;
+      }
+
+      return {
+        content: readFileSync(filePath).toString("base64"),
+        content_type: attachment.contentType || types[extname(filePath).toLowerCase()] || "application/octet-stream",
+        filename: attachment.filename || basename(filePath),
+      };
+    })
+    .filter(Boolean);
 }
 
 function marketingAdminToken() {
@@ -815,12 +894,13 @@ function outreachShowcaseConfig(options = {}) {
       process.env.EMAIL_SHOWCASE_URL ||
       publicSiteUrl()
   );
-  const videoUrls = parseUrlList(
+  const configuredVideoUrls = parseUrlList(
     options.video_urls ||
       options.videoUrls ||
       process.env.EMAIL_VIDEO_URLS ||
       ""
   );
+  const videoUrls = configuredVideoUrls.length ? configuredVideoUrls : defaultPublicVideoUrls();
 
   return { websiteUrl, videoUrls };
 }
@@ -831,10 +911,13 @@ function videoLinksHtml(videoUrls) {
   }
 
   const links = videoUrls
-    .map((url, index) => `<li><a href="${escapeHtml(url)}">Dental motion video example ${index + 1}</a></li>`)
+    .map(
+      (url, index) =>
+        `<li style="margin:8px 0;"><a href="${escapeHtml(url)}" style="color:#0f766e;font-weight:700;">Dental motion video example ${index + 1}</a></li>`
+    )
     .join("");
 
-  return `<p>Here are a few examples:</p><ul>${links}</ul>`;
+  return `<p style="margin:0 0 8px;">A short example is also attached, and you can watch it here:</p><ul style="margin:0 0 22px 20px;padding:0;">${links}</ul>`;
 }
 
 function videoLinksText(videoUrls) {
@@ -861,23 +944,30 @@ async function sendMarketingEmail(campaign, subscriber, fetchImpl = fetch) {
   }
 
   const content = campaignEmailContent(campaign, subscriber);
+  const attachments = resendAttachmentPayload(campaign.attachments);
+  const emailPayload = {
+    from: config.fromEmail,
+    to: [subscriber.email],
+    reply_to: contactRecipient,
+    subject: personalizeTemplate(campaign.subject, subscriber),
+    html: content.html,
+    text: content.text,
+    headers: {
+      "List-Unsubscribe": `<${content.unsubscribeUrl}>`,
+    },
+  };
+
+  if (attachments.length) {
+    emailPayload.attachments = attachments;
+  }
+
   const response = await fetchImpl("https://api.resend.com/emails", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${config.apiKey}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      from: config.fromEmail,
-      to: [subscriber.email],
-      reply_to: contactRecipient,
-      subject: personalizeTemplate(campaign.subject, subscriber),
-      html: content.html,
-      text: content.text,
-      headers: {
-        "List-Unsubscribe": `<${content.unsubscribeUrl}>`,
-      },
-    }),
+    body: JSON.stringify(emailPayload),
   });
 
   const detail = await response.text();
@@ -948,7 +1038,10 @@ async function sendMarketingCampaign(campaignId, options = {}, queryable = getDa
 
   let sentCount = 0;
   let failedCount = 0;
-  const campaign = campaignResult.rows[0];
+  const campaign = {
+    ...campaignResult.rows[0],
+    attachments: Array.isArray(options.attachments) ? options.attachments : [],
+  };
   const waitMs = Math.min(Math.max(0, Number(process.env.EMAIL_CAMPAIGN_DELAY_MS || 250)), 5000);
 
   for (const recipient of pending.rows) {
@@ -1656,24 +1749,35 @@ function defaultDentalOutreachCampaign(limit = 15, options = {}) {
   const safeWebsiteUrl = escapeHtml(showcase.websiteUrl);
   const videosHtml = videoLinksHtml(showcase.videoUrls);
   const videosText = videoLinksText(showcase.videoUrls);
+  const allowResend = booleanOption(options.resend_sent ?? options.resendSent, false);
+  const attachments = campaignVideoAttachments(options);
 
   return {
     html: `
-      <p>Hi {{clinic}},</p>
-      <p>I make dental motion graphic videos for clinics: short, colorful animations that explain treatments like implants, veneers, aligners, whitening, and smile transformations.</p>
-      <p>You can see the website here: <a href="${safeWebsiteUrl}">${safeWebsiteUrl}</a></p>
-      ${videosHtml || "<p>I can also send short video examples if you want to see the style.</p>"}
-      <p>If you want, I can send a simple quote for a custom video for your clinic.</p>
-      <p>Reply here and I will send details.</p>
-      <p>Best,<br>Dental Motion</p>
+      <div style="margin:0 auto;max-width:620px;border:1px solid #e6d8bf;border-radius:28px;overflow:hidden;background:#fffaf0;color:#10242f;font-family:Georgia,'Times New Roman',serif;">
+        <div style="padding:28px 30px;background:linear-gradient(135deg,#10242f,#0f766e);color:#fffaf0;">
+          <p style="margin:0 0 8px;font-size:12px;letter-spacing:.18em;text-transform:uppercase;color:#f8d089;">Dental Motion</p>
+          <h1 style="margin:0;font-size:30px;line-height:1.08;">Patient-friendly dental motion graphic videos</h1>
+        </div>
+        <div style="padding:30px;">
+          <p style="margin:0 0 16px;">Hi {{clinic}},</p>
+          <p style="margin:0 0 16px;line-height:1.65;">I create short dental motion graphic videos that help patients understand treatments like implants, veneers, aligners, whitening, and smile transformations before they book.</p>
+          <p style="margin:0 0 16px;line-height:1.65;">The goal is simple: give your clinic a polished visual asset for your website, social media, ads, and consultation follow-ups.</p>
+          ${videosHtml || "<p style=\"margin:0 0 16px;line-height:1.65;\">I attached a short example video so you can see the style right away.</p>"}
+          <p style="margin:0 0 24px;line-height:1.65;">You can also see the site here: <a href="${safeWebsiteUrl}" style="color:#0f766e;font-weight:700;">${safeWebsiteUrl}</a></p>
+          <p style="margin:0 0 22px;line-height:1.65;">If a custom video could help your clinic explain one treatment more clearly, reply with the treatment you want animated and I will send a simple quote.</p>
+          <p style="margin:0;line-height:1.65;">Best,<br>Dental Motion<br><a href="${safeWebsiteUrl}" style="color:#0f766e;">${safeWebsiteUrl}</a></p>
+        </div>
+      </div>
     `,
+    attachments,
     limit,
-    only_unsent: true,
-    preview_text: "Short dental motion graphic videos for patient education.",
+    only_unsent: !allowResend,
+    preview_text: "A short custom dental animation your patients can understand fast.",
     send: false,
-    subject: "Dental motion graphic video for {{clinic}}",
+    subject: "A short dental motion graphic video for {{clinic}}",
     text:
-      `Hi {{clinic}},\n\nI make dental motion graphic videos for clinics: short, colorful animations that explain treatments like implants, veneers, aligners, whitening, and smile transformations.\n\nWebsite: ${showcase.websiteUrl}${videosText}\n\nIf you want, I can send a simple quote for a custom video for your clinic.\n\nReply here and I will send details.\n\nBest,\nDental Motion`,
+      `Hi {{clinic}},\n\nI create short dental motion graphic videos that help patients understand treatments like implants, veneers, aligners, whitening, and smile transformations before they book.\n\nThe goal is simple: give your clinic a polished visual asset for your website, social media, ads, and consultation follow-ups.\n\nWebsite: ${showcase.websiteUrl}${videosText || "\n\nI attached a short example video so you can see the style right away."}\n\nIf a custom video could help your clinic explain one treatment more clearly, reply with the treatment you want animated and I will send a simple quote.\n\nBest,\nDental Motion\n${showcase.websiteUrl}`,
   };
 }
 
@@ -1690,28 +1794,63 @@ async function sendNextLeadBatch(limit = 15, options = {}, queryable = getDataba
   await ensureMarketingTables(queryable);
 
   const batchLimit = boundedPositiveInteger(limit, 15, 50);
-  const campaign = await createMarketingCampaign(defaultDentalOutreachCampaign(batchLimit, options), queryable);
+  const campaignPayload = defaultDentalOutreachCampaign(batchLimit, options);
+  const campaign = await createMarketingCampaign(campaignPayload, queryable);
 
   if (!campaign.saved || campaign.queued === 0) {
     const overview = await marketingSubscribersOverview(queryable);
+    const allowResend = booleanOption(options.resend_sent ?? options.resendSent, false);
     return {
       saved: true,
       campaign,
       delivery: null,
-      message: "No unsent leads are ready. Fetch clinics first or import a list.",
+      message: allowResend
+        ? "No active leads are available to resend."
+        : "No unsent leads are ready. Fetch clinics first, import a list, or choose resend if you intentionally want to email already-sent leads again.",
       stats: overview.stats,
     };
   }
 
-  const delivery = await sendMarketingCampaign(campaign.campaignId, { limit: batchLimit }, queryable);
+  const delivery = await sendMarketingCampaign(
+    campaign.campaignId,
+    { attachments: campaignPayload.attachments, limit: batchLimit },
+    queryable
+  );
   const overview = await marketingSubscribersOverview(queryable);
+  const allowResend = booleanOption(options.resend_sent ?? options.resendSent, false);
 
   return {
     saved: true,
     campaign,
     delivery,
-    message: `Sent ${delivery.sentCount} emails. Sent leads are removed from the pending queue.`,
+    message: allowResend
+      ? `Resent ${delivery.sentCount} emails by request.`
+      : `Sent ${delivery.sentCount} emails. Sent leads are removed from the pending queue.`,
     stats: overview.stats,
+  };
+}
+
+async function sendLeadTestEmail(options = {}) {
+  const campaign = defaultDentalOutreachCampaign(1, {
+    ...options,
+    attach_video: options.attach_video ?? options.attachVideo ?? true,
+    resend_sent: true,
+  });
+  const subscriber = {
+    clinic: "Bright Smile Dental Studio",
+    email: contactRecipient,
+    name: "Bright Smile Dental Studio",
+    unsubscribe_token: "test-preview",
+  };
+  const delivery = await sendMarketingEmail(campaign, subscriber);
+
+  return {
+    attached: (campaign.attachments || []).map((attachment) => attachment.filename),
+    delivery,
+    sent: true,
+    subject: personalizeTemplate(campaign.subject, subscriber),
+    to: contactRecipient,
+    video_urls: outreachShowcaseConfig(options).videoUrls,
   };
 }
 
@@ -2085,6 +2224,33 @@ async function handleAdminLeadSend(request, response) {
   }
 }
 
+async function handleAdminLeadTestEmail(request, response) {
+  if (!requireMarketingAdmin(request, response)) {
+    return;
+  }
+
+  if (request.method !== "POST") {
+    sendJson(response, 405, { ok: false, message: "Method not allowed." });
+    return;
+  }
+
+  let payload = {};
+  try {
+    payload = await readJsonBody(request);
+  } catch (error) {
+    sendJson(response, 400, { ok: false, message: error.message });
+    return;
+  }
+
+  try {
+    const result = await sendLeadTestEmail(payload);
+    sendJson(response, 200, { ok: true, test_email: result });
+  } catch (error) {
+    const statusCode = error.code === "EMAIL_NOT_CONFIGURED" ? 503 : 400;
+    sendJson(response, statusCode, { ok: false, message: error.message });
+  }
+}
+
 async function handleAdminCommand(request, response) {
   if (!requireMarketingAdmin(request, response)) {
     return;
@@ -2122,9 +2288,13 @@ async function handleAdminCommand(request, response) {
   if (command.includes("send")) {
     const match = command.match(/\b(\d{1,2})\b/);
     const limit = match ? Number(match[1]) : 15;
+    const options = {
+      ...payload,
+      resend_sent: Boolean(payload.resend_sent) || /\b(again|resend|resent|already sent)\b/.test(command),
+    };
 
     try {
-      const result = await sendNextLeadBatch(limit, payload);
+      const result = await sendNextLeadBatch(limit, options);
       if (!result.saved) {
         sendJson(response, 503, { ok: false, message: "Database is not connected yet." });
         return;
@@ -2246,6 +2416,11 @@ async function handleRequest(request, response) {
     return;
   }
 
+  if (path === "/api/admin/leads/test-email") {
+    await handleAdminLeadTestEmail(request, response);
+    return;
+  }
+
   if (path === "/api/admin/command") {
     await handleAdminCommand(request, response);
     return;
@@ -2307,6 +2482,7 @@ module.exports = {
   runDailyMarketingCampaign,
   resendConfig,
   sendNextLeadBatch,
+  sendLeadTestEmail,
   sendMarketingCampaign,
   sendContactEmail,
   sendMarketingEmail,

@@ -1,5 +1,6 @@
 const assert = require("node:assert/strict");
 const { createServer } = require("node:http");
+const { join } = require("node:path");
 const test = require("node:test");
 const {
   campaignEmailContent,
@@ -307,6 +308,53 @@ test("marketing email sends through Resend with domain sender and list unsubscri
   delete process.env.PUBLIC_SITE_URL;
 });
 
+test("marketing email attaches the local demo video through Resend", async () => {
+  process.env.RESEND_KEY = "re_test_key";
+  process.env.EMAIL_CAMPAIGN_FROM_EMAIL = "Dental Motion <team@dentalmotiongraphic.com>";
+  process.env.PUBLIC_SITE_URL = "https://dentalmotiongraphic.com";
+
+  let capturedRequest;
+  const result = await sendMarketingEmail(
+    {
+      attachments: [
+        {
+          contentType: "video/mp4",
+          filename: "dental-motion-demo-1.mp4",
+          path: join(__dirname, "..", "videos", "dental-motion-demo-1.mp4"),
+        },
+      ],
+      subject: "Dental video offer",
+      html: "<p>Hello doctor.</p>",
+      text: "Hello doctor.",
+    },
+    {
+      email: "owner@example.com",
+      unsubscribe_token: "abc123",
+    },
+    async (url, request) => {
+      capturedRequest = { url, request };
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ id: "email_456" });
+        },
+      };
+    }
+  );
+
+  const body = JSON.parse(capturedRequest.request.body);
+
+  assert.deepEqual(result, { id: "email_456", provider: "resend", dryRun: false });
+  assert.equal(body.attachments[0].filename, "dental-motion-demo-1.mp4");
+  assert.equal(body.attachments[0].content_type, "video/mp4");
+  assert.ok(body.attachments[0].content.length > 1000);
+
+  delete process.env.RESEND_KEY;
+  delete process.env.EMAIL_CAMPAIGN_FROM_EMAIL;
+  delete process.env.PUBLIC_SITE_URL;
+});
+
 test("lead commands understand SF and outreach template personalizes clinic names", () => {
   assert.deepEqual(leadLocationFromCommand("fetch sf dental clinics"), {
     bbox: [37.62, -122.56, 37.91, -122.22],
@@ -342,7 +390,26 @@ test("outreach template includes website and video example links", () => {
     "https://one.test",
     "https://two.test",
   ]);
-  assert.deepEqual(outreachShowcaseConfig({ website_url: "dentalmotiongraphic.com" }).videoUrls, []);
+  assert.ok(
+    outreachShowcaseConfig({ website_url: "dentalmotiongraphic.com" }).videoUrls.some((url) =>
+      url.includes("/videos/dental-motion-demo-1.mp4")
+    )
+  );
+});
+
+test("outreach campaign can attach the demo video and intentionally resend", () => {
+  const campaign = defaultDentalOutreachCampaign(15, {
+    attach_video: true,
+    resend_sent: true,
+    video_urls: "https://dentalmotiongraphic.com/videos/dental-motion-demo-1.mp4",
+    website_url: "https://dentalmotiongraphic.com",
+  });
+
+  assert.equal(campaign.only_unsent, false);
+  assert.ok(campaign.attachments.length >= 1);
+  assert.equal(campaign.attachments[0].filename, "dental-motion-demo-1.mp4");
+  assert.match(campaign.html, /Patient-friendly dental motion graphic videos/);
+  assert.match(campaign.text, /consultation follow-ups/);
 });
 
 test("raw clinic research leads are saved separately from email subscribers", async () => {

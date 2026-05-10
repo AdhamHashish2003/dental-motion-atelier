@@ -144,6 +144,27 @@ button:disabled {
   grid-template-columns: 1fr 1fr;
 }
 
+.toggle-grid {
+  display: grid;
+  gap: 10px;
+  margin: 16px 0;
+}
+
+.toggle-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid rgba(16, 36, 47, 0.12);
+  border-radius: 18px;
+  padding: 12px 14px;
+  background: rgba(255, 250, 240, 0.68);
+}
+
+.toggle-line input {
+  width: auto;
+  accent-color: #0f766e;
+}
+
 .hint {
   margin: 0;
   color: #637481;

@@ -37,10 +37,11 @@
           <button id="runCommandButton" type="button">Run command</button>
           <button id="fetchButton" type="button">Fetch SF clinics</button>
           <button id="sendButton" type="button">Send 15</button>
+          <button id="testEmailButton" type="button">Send test email</button>
           <button id="statsButton" type="button">Refresh stats</button>
         </div>
         <p class="hint">
-          Try: <code>fetch sf dental clinics</code>, <code>send 15</code>, or <code>stats</code>.
+          Try: <code>fetch sf dental clinics</code>, <code>send 15</code>, <code>send 15 again</code>, or <code>stats</code>.
         </p>
       </section>
 
@@ -57,11 +58,21 @@
               id="videoInput"
               rows="4"
               placeholder="Paste one video URL per line when you have them"
-            ></textarea>
+            >https://dentalmotiongraphic.com/videos/dental-motion-demo-1.mp4</textarea>
+          </label>
+        </div>
+        <div class="toggle-grid">
+          <label class="toggle-line">
+            <input id="attachVideoInput" type="checkbox" checked />
+            <span>Attach the demo video file to each email</span>
+          </label>
+          <label class="toggle-line">
+            <input id="resendSentInput" type="checkbox" />
+            <span>Allow resending to leads that were already emailed</span>
           </label>
         </div>
         <p class="hint">
-          Most inboxes do not play embedded videos, so the email links to your website and video examples.
+          Normal sending only uses unsent leads. Turn on resend only when you deliberately want a second touch.
         </p>
       </section>
 

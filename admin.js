@@ -5,9 +5,12 @@ const commandInput = document.querySelector("#commandInput");
 const runCommandButton = document.querySelector("#runCommandButton");
 const fetchButton = document.querySelector("#fetchButton");
 const sendButton = document.querySelector("#sendButton");
+const testEmailButton = document.querySelector("#testEmailButton");
 const statsButton = document.querySelector("#statsButton");
 const websiteInput = document.querySelector("#websiteInput");
 const videoInput = document.querySelector("#videoInput");
+const attachVideoInput = document.querySelector("#attachVideoInput");
+const resendSentInput = document.querySelector("#resendSentInput");
 const output = document.querySelector("#output");
 const leadList = document.querySelector("#leadList");
 const researchedMetric = document.querySelector("#researchedMetric");
@@ -18,13 +21,15 @@ const sentMetric = document.querySelector("#sentMetric");
 const tokenKey = "dentalMotionAdminToken";
 const websiteKey = "dentalMotionShowcaseUrl";
 const videosKey = "dentalMotionVideoUrls";
+const attachVideoKey = "dentalMotionAttachVideo";
+const resendSentKey = "dentalMotionResendSent";
 
 function token() {
   return localStorage.getItem(tokenKey) || "";
 }
 
 function setBusy(isBusy) {
-  for (const button of [runCommandButton, fetchButton, sendButton, statsButton]) {
+  for (const button of [runCommandButton, fetchButton, sendButton, testEmailButton, statsButton]) {
     button.disabled = isBusy;
   }
 }
@@ -43,8 +48,12 @@ function renderStats(stats = {}) {
 function showcasePayload() {
   localStorage.setItem(websiteKey, websiteInput.value.trim());
   localStorage.setItem(videosKey, videoInput.value.trim());
+  localStorage.setItem(attachVideoKey, attachVideoInput.checked ? "true" : "false");
+  localStorage.setItem(resendSentKey, resendSentInput.checked ? "true" : "false");
 
   return {
+    attach_video: attachVideoInput.checked,
+    resend_sent: resendSentInput.checked,
     video_urls: videoInput.value.trim(),
     website_url: websiteInput.value.trim() || "https://dentalmotiongraphic.com",
   };
@@ -185,12 +194,23 @@ sendButton.addEventListener("click", () => {
   );
 });
 
+testEmailButton.addEventListener("click", () => {
+  run("Sending test email to team@dentalmotiongraphic.com", () =>
+    adminRequest("/api/admin/leads/test-email", {
+      method: "POST",
+      body: JSON.stringify(showcasePayload()),
+    })
+  );
+});
+
 statsButton.addEventListener("click", () => {
   run("Loading stats", refreshStats);
 });
 
 websiteInput.value = localStorage.getItem(websiteKey) || websiteInput.value;
-videoInput.value = localStorage.getItem(videosKey) || "";
+videoInput.value = localStorage.getItem(videosKey) || videoInput.value.trim();
+attachVideoInput.checked = localStorage.getItem(attachVideoKey) !== "false";
+resendSentInput.checked = localStorage.getItem(resendSentKey) === "true";
 
 if (token()) {
   run("Loading stats", refreshStats);
